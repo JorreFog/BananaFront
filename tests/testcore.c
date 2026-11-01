@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../src/libretro.h"
 
@@ -49,9 +50,15 @@ static void send_maps(void)
     struct retro_memory_map m = { d, 1 };
     fprintf(stderr, "testcore: memory_maps = %d\n", env(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &m));
 }
+static int frame_us = -1, spike_every;  // TESTCORE_FRAME_MS / TESTCORE_SPIKE_EVERY: a heavy core with load spikes
 RETRO_API void retro_run(void)
 {
     poll_cb();
+    if (frame_us < 0) {
+        frame_us = getenv("TESTCORE_FRAME_MS") ? atoi(getenv("TESTCORE_FRAME_MS")) * 1000 : 0;
+        spike_every = getenv("TESTCORE_SPIKE_EVERY") ? atoi(getenv("TESTCORE_SPIKE_EVERY")) : 0;
+    }
+    if (frame_us) usleep((useconds_t)(spike_every && frame % spike_every == spike_every - 1 ? frame_us * 2 + 4000 : frame_us));
     if (maps_late == 1) { send_maps(); maps_late = 2; }
     frame++;
     ram[0] = (unsigned char)frame;

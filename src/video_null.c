@@ -19,7 +19,7 @@ static unsigned W, H;
 static int bpp;
 static int pitch_;
 static uint64_t hash = 1469598103934665603ull, frames;
-static double last_flip;
+static double last_flip, t_start, period_ms, commit_at;
 
 bool bf_video_open(const bf_video_opts* o)
 {
@@ -32,6 +32,8 @@ bool bf_video_open(const bf_video_opts* o)
     long ns = f > 0 ? (long)(1e9 / f) : 100000;
     t.it_interval.tv_nsec = t.it_value.tv_nsec = ns;
     timerfd_settime(tfd, 0, &t, NULL);
+    t_start = bf_now_ms();
+    period_ms = ns / 1e6;
     bf_log("video: none (null driver, %.0f Hz)", f);
     return true;
 }
@@ -56,6 +58,7 @@ bool bf_video_commit(bool dupe)
     }
     frames++;
     pending = true;
+    commit_at = bf_now_ms();
     return true;
 }
 
@@ -64,7 +67,12 @@ int bf_video_fd(void) { return tfd; }
 void bf_video_events(void)
 {
     uint64_t n;
-    if (read(tfd, &n, sizeof n) > 0) { pending = false; last_flip = bf_now_ms(); }
+    if (read(tfd, &n, sizeof n) <= 0 || !pending) return;
+    // as a panel does: a commit shows at the first tick after it, and the flip's time is that tick's
+    const double tick = t_start + (double)(long long)((bf_now_ms() - t_start) / period_ms) * period_ms;
+    if (tick < commit_at) return;
+    pending = false;
+    last_flip = tick;
 }
 double bf_video_refresh(void) { return 60.0; }
 int bf_video_size(int* w, int* h) { *w = 640; *h = 480; return 0; }
