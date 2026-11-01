@@ -27,3 +27,4 @@ void bf_audio_close(void)
 }
 void bf_audio_pause(bool on) { (void)on; }
 void bf_audio_raw(const int16_t* data, size_t frames) { (void)data; (void)frames; }
+double bf_audio_ms_take(void) { return 0; }

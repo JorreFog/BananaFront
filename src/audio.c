@@ -76,7 +76,17 @@ static void write_silence(snd_pcm_uframes_t n)
     }
 }
 
+static double audio_ms;  // time spent here (the frontend's cost), taken by the stats line
+double bf_audio_ms_take(void) { double v = audio_ms; audio_ms = 0; return v; }
+static size_t audio_batch_(const int16_t* data, size_t frames);
 size_t bf_audio_batch(const int16_t* data, size_t frames)
+{
+    const double t = bf_now_ms();
+    size_t r = audio_batch_(data, frames);
+    audio_ms += bf_now_ms() - t;
+    return r;
+}
+static size_t audio_batch_(const int16_t* data, size_t frames)
 {
     if (!pcm || muted || !frames) return frames;
     snd_pcm_sframes_t avail = snd_pcm_avail(pcm);

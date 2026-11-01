@@ -101,6 +101,7 @@ static struct {
     uint64_t flip_n;
     double lat_sum;
     uint64_t lat_n;
+    double fe_ms;  // BananaFront's own time (the picture's copy, the sound, the commit, the overlay's wake-up)
 } S;
 
 static double cpu_ms(void)
@@ -128,11 +129,11 @@ static void stats_line(bool final)
     char b[512];
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
-             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms",
+             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms frontend %.3f ms/frame",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
-             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0);
+             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, S.frames ? (S.fe_ms + bf_audio_ms_take()) / S.frames : 0);
     bf_log("%s", b);
     if (A.stats) {
         FILE* f = fopen(A.stats, "a");
@@ -144,6 +145,7 @@ static void stats_line(bool final)
     S.flip_n = 0;
     S.lat_sum = 0;
     S.lat_n = 0;
+    S.fe_ms = 0;
     S.t0 = now;
     S.cpu0 = cpu_ms();
 }
@@ -170,7 +172,14 @@ bool bf_direct_framebuffer(struct retro_framebuffer* fb)
     return true;
 }
 
+static void video_frame_(const void* data, unsigned w, unsigned h, size_t pitch);
 void bf_video_frame(const void* data, unsigned w, unsigned h, size_t pitch)
+{
+    const double t = bf_now_ms();
+    video_frame_(data, w, h, pitch);
+    S.fe_ms += bf_now_ms() - t;
+}
+static void video_frame_(const void* data, unsigned w, unsigned h, size_t pitch)
 {
     if (!data || data == RETRO_HW_FRAME_BUFFER_VALID) { frame_dupe = true; return; }
     if (data == direct_buf) {  // drawn in place: nothing to copy
@@ -733,6 +742,7 @@ int main(int argc, char** argv)
         }
         if (!ff) bf_cpugov_frame(t1 - t0, late);
         bf_cpugov_tick();
+        const double tf = bf_now_ms();
         frontend_frame();
         if (g_core.av_changed) {
             g_core.av_changed = false;
@@ -741,6 +751,7 @@ int main(int argc, char** argv)
         if (!frame_new) S.dupes++;
         // the flip event asks for the next frame; a commit that failed (a lease taken back?) waits a refresh instead
         want_frame = !bf_video_commit(!frame_new);
+        S.fe_ms += bf_now_ms() - tf;
         if (want_frame) usleep((useconds_t)(1e6 / refresh));
 
         if (t1 >= next_sram) { sram_save(false); next_sram = t1 + 10000; }

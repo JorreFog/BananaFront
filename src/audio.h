@@ -22,4 +22,5 @@ void bf_audio_get_stats(bf_audio_stats* st, bool reset);
 double bf_audio_delay_ms(void);
 void bf_audio_pause(bool on);
 void bf_audio_raw(const int16_t* data, size_t frames);
+double bf_audio_ms_take(void);  // ms spent in the audio path since the last call
 void bf_audio_close(void);
