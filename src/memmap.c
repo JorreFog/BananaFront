@@ -80,10 +80,11 @@ const struct retro_memory_descriptor* bf_mmap_find(const struct retro_memory_des
 // the preprocessed copy of the core's maps (g_core.mmap is the core's own, kept as given)
 static struct retro_memory_descriptor* pp;
 static unsigned pp_n;
-static bool pp_ok;
+static bool pp_ok, loaded;
 
 void bf_mmap_refresh(void)
 {
+    loaded = true;
     pp = g_core.mmap;  // (core.c copied them; preprocessing in place is what RetroArch does to its copy)
     pp_n = g_core.mmap_n;
     // (RetroArch ignores a failure here too: the descriptors after the first it can't fill keep select 0 and are
@@ -129,9 +130,11 @@ const char* bf_mmap_err(int err)
 
 // the core sent new maps (after the game loaded): RetroArch preprocesses them again too
 __attribute__((weak)) void frontend_mmap_changed(void) {}
+// (mGBA sends its maps from its deferred setup inside the first retro_run, not in retro_load_game: every map that
+// comes after the load is taken up, by the export and RetroAchievements too)
 void bf_mmap_changed(void)
 {
-    if (!pp) return;  // (before the game loaded: main refreshes after the load)
+    if (!loaded) return;  // (during the load: main refreshes once it's done)
     bf_mmap_refresh();
     frontend_mmap_changed();
 }

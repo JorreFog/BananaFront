@@ -2,6 +2,7 @@
 // (with and without the EXPERIMENTAL bit), publishes a memory map with a known pattern, draws a counter, and prints
 // what it was answered to stderr ("testcore: <question> = <answer>") so tests/host-test.sh can check them.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../src/libretro.h"
@@ -41,9 +42,17 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info* i)
 }
 RETRO_API void retro_set_controller_port_device(unsigned p, unsigned d) { (void)p; (void)d; }
 RETRO_API void retro_reset(void) { frame = 0; }
+static int maps_late;  // TESTCORE_LATE_MAPS: the map sent from the first retro_run (as mGBA does)
+static void send_maps(void)
+{
+    struct retro_memory_descriptor d[1] = { { 0, ram, 0, 0xC000, 0, 0, sizeof ram, "wram" } };
+    struct retro_memory_map m = { d, 1 };
+    fprintf(stderr, "testcore: memory_maps = %d\n", env(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &m));
+}
 RETRO_API void retro_run(void)
 {
     poll_cb();
+    if (maps_late == 1) { send_maps(); maps_late = 2; }
     frame++;
     ram[0] = (unsigned char)frame;
     for (int i = 0; i < 64 * 48; i++) fb[i] = (unsigned short)(i + frame);
@@ -68,9 +77,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info* g)
     fprintf(stderr, "testcore: fastforwarding = %d\n", env(RETRO_ENVIRONMENT_GET_FASTFORWARDING, &b));
     for (unsigned i = 0; i < sizeof ram; i++) ram[i] = (unsigned char)(i * 7);
     memcpy(ram + 0x100, "TESTCORE", 8);
-    struct retro_memory_descriptor d[1] = { { 0, ram, 0, 0xC000, 0, 0, sizeof ram, "wram" } };
-    struct retro_memory_map m = { d, 1 };
-    fprintf(stderr, "testcore: memory_maps = %d\n", env(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &m));
+    if (getenv("TESTCORE_LATE_MAPS")) maps_late = 1;
+    else send_maps();
     return true;
 }
 RETRO_API bool retro_load_game_special(unsigned t, const struct retro_game_info* g, size_t n) { (void)t; (void)g; (void)n; return false; }
