@@ -49,10 +49,10 @@ build/host/bananafront: $(SRC_HOST) src/*.h Makefile build/host/librc.a
 	$(HOSTCC) -O1 -g -fsanitize=address,undefined -Isrc -I$(RC)/include -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ $(SRC_HOST) \
 		build/host/librc.a -lz -lm -ldl -lpthread
 
-build/host/test_unit: tests/test_unit.c src/util.c src/resample.c src/statefile.c src/*.h
+build/host/test_unit: tests/test_unit.c tests/stub_core.c src/util.c src/resample.c src/statefile.c src/memmap.c src/*.h
 	@mkdir -p build/host
-	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ tests/test_unit.c src/util.c \
-		src/resample.c src/statefile.c -lz -lm
+	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -Isrc -o $@ tests/test_unit.c \
+		tests/stub_core.c src/util.c src/resample.c src/statefile.c src/memmap.c -lz -lm
 test: build/host/test_unit
 	./build/host/test_unit
 

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../src/bf.h"
+#include "../src/memmap.h"
 
 static int fails = 0;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
@@ -143,8 +144,32 @@ static void test_resample(void)
     free(out);
 }
 
+static void test_memmap(void)
+{
+    // gpSP's two descriptors (select 0, power-of-two lengths): EWRAM at 0x2000000, IWRAM at 0x3000000
+    static uint8_t iw[0x8000], ew[0x40000];
+    struct retro_memory_descriptor d[2] = {
+        { 0, iw, 0, 0x3000000, 0, 0, 0x8000, NULL },
+        { 0, ew, 0, 0x2000000, 0, 0, 0x40000, NULL } };
+    CHECK(bf_mmap_preprocess(d, 2));
+    size_t off = 0;
+    const struct retro_memory_descriptor* f = bf_mmap_find(d, 2, 0x2000010, &off);
+    CHECK(f == &d[1] && off == 0x10);
+    f = bf_mmap_find(d, 2, 0x3007FFF, &off);
+    CHECK(f == &d[0] && off == 0x7FFF);
+    // no mirror: RetroArch's select from a power-of-two length covers that length only (0x3008004 isn't IWRAM's)
+    CHECK(bf_mmap_find(d, 2, 0x3008004, &off) == NULL);
+    CHECK(bf_mmap_find(d, 2, 0x4000000, &off) == NULL);
+    // a length that isn't a power of two with no select: preprocessing stops (as RetroArch's), still found by range
+    struct retro_memory_descriptor e[1] = { { 0, ew, 0, 0x6000, 0, 0, 0x1800, NULL } };
+    CHECK(!bf_mmap_preprocess(e, 1));
+    f = bf_mmap_find(e, 1, 0x6100, &off);
+    CHECK(f == &e[0] && off == 0x100);
+}
+
 int main(void)
 {
+    test_memmap();
     test_paths();
     test_conf();
     test_state();
