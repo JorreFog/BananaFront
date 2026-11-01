@@ -21,7 +21,7 @@
 #define CPU "/sys/devices/system/cpu/cpufreq/policy0"
 #define MAXF 16
 #define STEP_DOWN_S 5.0
-#define HEADROOM 0.75  // the slowest frame at the lower clock must fit in 75 % of a refresh
+#define HEADROOM 0.65  // the slowest frame at the lower clock must fit in 65 % of a refresh (0.75 let the NES stress ROM reach 14 of 16.7 ms at 600 MHz)
 
 static struct {
     bool on;
