@@ -12,7 +12,18 @@ the universal companion export (`~/banana-emu/common/COMPANION-SPEC.md`).
     tests/host-test.sh <core.so> <rom>   # PC end-to-end: saves, states, thumbnails, commands, quick resume
     tools/devrun.sh <dev> <system> <core> <rom> <seconds> [tag]   # on a handheld through the menu (see the file)
 
-Launcher: BananaLinux `run-bananafront` (branch front/bananafront).
+What it has (2026-11-01): the in-game menu (BananaDS's, one panel; Quick settings: volume, brightness, shader,
+picture size), RetroAchievements (rcheevos rc_client, RetroArch's token, offline answer cache), GPU shaders (BananaOS's
+GLSL set; the GPU's fence in the commit), the screen border and pop-ups on an overlay plane, low latency (each frame
+started as late as it still makes its refresh), its own clock governor (option), 2-4 players, quick resume, power-off
+resume (SIGUSR1), PR #151's button jobs, the direct framebuffer for cores that ask, saves/states written on threads.
+
+Measured against RetroArch through the same menu launch (tools/ab.sh, CPU% x clock = cycles, both handhelds): GBC
+-50/-57 %, GBA -40 %, MD -33/-25 %, SNES -23 %, PICO-8 -6/-7 %, NES -4/-3 %; RSS 37-53 MB -> 7-27 MB. Saves and states
+carry over both ways (tools/xcompat.sh: GB, NES, MD, PICO-8 on both handhelds).
+
+Launcher: BananaLinux `run-bananafront` (branch front/bananafront); `run-retroarch` hands the systems in its
+`BF_SYSTEMS` (Settings > Other systems > Frontend) to it.
 
 Licence: GPL-3.0 (parts follow BananaDS and RetroArch, both GPL-3.0). Third party: libretro.h (MIT, RetroArch team),
 rcheevos (MIT, RetroAchievements.org), stb_image_write (public domain / MIT, Sean Barrett), bcomp (MIT, BananaOS).
