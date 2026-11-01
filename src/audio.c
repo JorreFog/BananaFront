@@ -126,10 +126,14 @@ void bf_audio_flush(void)
         write_silence(buf_frames / 2);
         w = snd_pcm_writei(pcm, acc, acc_n);
     }
-    if (w >= 0 && (size_t)w < acc_n) st.dropped += acc_n - (size_t)w;  // (full: only if the core runs far ahead)
-    else if (w == -EAGAIN) st.dropped += acc_n;
-    st.written += w > 0 ? (size_t)w : 0;
-    acc_n = 0;
+    // what didn't fit (a core that sends its sound in bursts: fake-08) waits for the next refresh instead of being
+    // dropped; only past a buffer's worth is any let go
+    const size_t done = w > 0 ? (size_t)w : 0;
+    st.written += done;
+    size_t left = acc_n - done;
+    if (left > buf_frames) { st.dropped += left - buf_frames; memmove(acc, acc + (acc_n - buf_frames) * 2, buf_frames * 4); left = buf_frames; }
+    else if (done && left) memmove(acc, acc + done * 2, left * 4);
+    acc_n = left;
     audio_ms += bf_now_ms() - t0;
 }
 
