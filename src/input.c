@@ -190,9 +190,16 @@ static void key_event(int code, int value)
     if (raw_mode) { raw_push(code, value); return; }
     const bool down = value != 0;
     if (is_hotkey(code)) {
+        // F alone opens the menu only as a TAP: pressed and let go here, in the game, with no other button held or
+        // pressed in between. A release whose press wasn't seen in the game is ignored: the menu closes on F's press
+        // (raw mode takes it), and that F's release used to reach the game and open the menu again - QA, 0.5.1: "shows
+        // on release, hides on button down, so you cannot turn off the menu".
+        const bool was = hotkey_down;
         hotkey_down = down;
-        if (down) hotkey_used = false;
-        else if (!hotkey_used && on_hotkey) on_hotkey(BF_HK_ALONE, true, true);  // F pressed and let go alone
+        if (down) {
+            hotkey_used = false;
+            for (int p = 0; p < NPORT; p++) if (pbuttons[p]) hotkey_used = true;  // (a button already held: not a tap)
+        } else if (was && !hotkey_used && on_hotkey) on_hotkey(BF_HK_ALONE, true, true);
         return;
     }
     if (code == KEY_VOLUMEUP || code == KEY_VOLUMEDOWN) {
