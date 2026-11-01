@@ -5,7 +5,8 @@
 // - Down one step after STEP_DOWN_S seconds with no missed refresh, if the slowest frame of that time (p99 of the last
 //   second's ~60) would still fit at the lower clock with HEADROOM to spare (work scales by the clock ratio: the A55
 //   here is memory-bound, so that's pessimistic, i.e. safe).
-// - Up one step at once on a missed refresh (two at once for two in a second), and that clock is banned for a while
+// - Up one step when the slowest frame of a second used over 90 % of a refresh (before any is late), and
+// - up one step at once on a missed refresh (two at once for two in a second), and that clock is banned for a while
 //   that doubles each time it fails again (30 s, 60 s, ... BananaDS's escalating ban).
 // - Saves, the menu: the top clock for a moment (bf_cpugov_boost): a stall that isn't the clock's fault.
 // - The clock found is kept in $BANANAFRONT_DATA/cpugov/<game>.khz and the next start begins there.
@@ -18,7 +19,8 @@
 #include "bf.h"
 #include "cpugov.h"
 
-#define CPU "/sys/devices/system/cpu/cpufreq/policy0"
+#define CPU_DEFAULT "/sys/devices/system/cpu/cpufreq/policy0"
+static const char* cpu_dir(void) { const char* d = getenv("BANANAFRONT_CPUFREQ_DIR"); return d && *d ? d : CPU_DEFAULT; }  // (tests)
 #define MAXF 16
 #define STEP_DOWN_S 5.0
 #define HEADROOM 0.65  // the slowest frame at the lower clock must fit in 65 % of a refresh (0.75 let the NES stress ROM reach 14 of 16.7 ms at 600 MHz)
@@ -44,7 +46,7 @@ static struct {
 static bool rd(const char* f, char* out, size_t n)
 {
     char p[160];
-    snprintf(p, sizeof p, CPU "/%s", f);
+    snprintf(p, sizeof p, "%s/%s", cpu_dir(), f);
     FILE* fp = fopen(p, "r");
     if (!fp) return false;
     bool ok = fgets(out, (int)n, fp) != NULL;
@@ -55,7 +57,7 @@ static bool rd(const char* f, char* out, size_t n)
 static void wr(const char* f, const char* v)
 {
     char p[160];
-    snprintf(p, sizeof p, CPU "/%s", f);
+    snprintf(p, sizeof p, "%s/%s", cpu_dir(), f);
     FILE* fp = fopen(p, "w");
     if (fp) { fputs(v, fp); fclose(fp); }
 }
@@ -142,6 +144,8 @@ void bf_cpugov_tick(void)
     qsort(G.win, G.nwin, sizeof *G.win, cmpd);
     G.win_p99 = G.win[(int)(G.nwin * 0.99)];
     G.nwin = 0;
+    // near the limit (the slowest frame of the last second over 90 % of a refresh): up one step before a frame is late
+    if (G.win_p99 > G.period_ms * 0.90 && G.cur < G.nf - 1) { set_clock(G.cur + 1, "near the limit"); return; }
     if (G.cur <= 0) return;
     if (t - G.last_change < STEP_DOWN_S * 1000 || t - G.last_late < STEP_DOWN_S * 1000) return;
     const int dn = G.cur - 1;
