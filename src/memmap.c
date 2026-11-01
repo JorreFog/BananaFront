@@ -86,8 +86,12 @@ void bf_mmap_refresh(void)
 {
     pp = g_core.mmap;  // (core.c copied them; preprocessing in place is what RetroArch does to its copy)
     pp_n = g_core.mmap_n;
-    pp_ok = pp_n && bf_mmap_preprocess(pp, pp_n);
-    if (pp_n && !pp_ok) bf_log("memory maps: the core's %u descriptors don't preprocess", pp_n);
+    // (RetroArch ignores a failure here too: the descriptors after the first it can't fill keep select 0 and are
+    // matched by their start and length, so the same addresses answer)
+    if (pp_n && !bf_mmap_preprocess(pp, pp_n))
+        bf_log("memory maps: one of the core's %u descriptors has no select and a length that isn't a power of two "
+               "(read by start and length, as RetroArch does)", pp_n);
+    pp_ok = pp_n > 0;
 }
 
 bool bf_mmap_has_maps(void) { return pp_ok; }

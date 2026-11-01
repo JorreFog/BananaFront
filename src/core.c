@@ -187,7 +187,7 @@ __attribute__((weak)) bool bf_hw_render_request(struct retro_hw_render_callback*
 
 static bool environment(unsigned cmd, void* data)
 {
-    switch (cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL) {
+    switch (cmd) {
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: *(const char**)data = bf_env_system_dir; return true;
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: *(const char**)data = bf_env_save_dir; return true;
     case RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY: *(const char**)data = bf_env_system_dir; return true;
@@ -297,6 +297,8 @@ static bool environment(unsigned cmd, void* data)
         return true;
     }
     default:
+        // (a command sent with the experimental bit that this frontend knows without it, as RetroArch answers it)
+        if (cmd & RETRO_ENVIRONMENT_EXPERIMENTAL) return environment(cmd & ~RETRO_ENVIRONMENT_EXPERIMENTAL, data);
         if (getenv("BANANAFRONT_DEBUG")) bf_log("environment %u not answered", cmd);
         return false;
     }
