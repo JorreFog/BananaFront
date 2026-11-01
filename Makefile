@@ -53,8 +53,12 @@ build/host/test_unit: tests/test_unit.c tests/stub_core.c src/util.c src/resampl
 	@mkdir -p build/host
 	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -Isrc -o $@ tests/test_unit.c \
 		tests/stub_core.c src/util.c src/resample.c src/statefile.c src/memmap.c -lz -lm
-test: build/host/test_unit
+build/host/testcore.so: tests/testcore.c src/libretro.h
+	@mkdir -p build/host
+	$(HOSTCC) -O1 -g -shared -fPIC -o $@ tests/testcore.c
+test: build/host/test_unit build/host/bananafront build/host/testcore.so
 	./build/host/test_unit
+	tests/core-test.sh
 
 # the shared companion code: the copies in src/third_party/bcomp follow ~/banana-emu/common/companion
 sync-common:
