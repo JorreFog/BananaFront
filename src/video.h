@@ -30,4 +30,11 @@ double bf_video_last_flip_ms(void);  // when the last flip happened (bf_now_ms c
 int bf_video_canvas(uint32_t** px, int* pitch, int* w, int* h);
 void bf_video_canvas_show(int k);
 void bf_video_canvas_done(void);  // the game's picture back
+bool bf_video_shader(const char* name);  // a GPU shader pass (shader.c); false: unavailable
+bool bf_video_wants_xrgb(void);          // the game's buffers are XRGB8888 whatever the core's format (the shader's input)
+// the overlay plane (pop-ups over the game): a transparent ARGB8888 buffer, the panel's width x rows, to draw the next
+// picture's overlay in (NULL: no overlay plane); _show(true) puts it up with the next commit, false takes it down
+uint32_t* bf_video_overlay(int rows, int* pitch, int* w);
+void bf_video_overlay_show(bool on);
+bool bf_video_has_overlay(void);
 void bf_video_close(void);

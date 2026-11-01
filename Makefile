@@ -7,8 +7,8 @@ BOARD ?= rgds-plus
 VERSION := $(shell git describe --always --dirty 2>/dev/null || echo dev)
 
 SRC_COMMON := src/main.c src/core.c src/util.c src/resample.c src/statefile.c src/unzip.c src/memmap.c src/input.c \
-	src/frontend.c src/ra.c src/menu.c src/menu_host.c src/lang.c src/third_party/bcomp/bcomp.c
-SRC_DEVICE := $(SRC_COMMON) src/kms.c src/audio.c
+	src/frontend.c src/cpugov.c src/ra.c src/menu.c src/menu_host.c src/lang.c src/third_party/bcomp/bcomp.c
+SRC_DEVICE := $(SRC_COMMON) src/kms.c src/shader.c src/audio.c
 SRC_HOST := $(SRC_COMMON) src/video_null.c src/audio_null.c
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation
 MENU_WARN := -Wno-misleading-indentation -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable

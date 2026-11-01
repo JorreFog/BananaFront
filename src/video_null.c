@@ -98,3 +98,8 @@ void bf_video_canvas_show(int k)
     fclose(f);
 }
 void bf_video_canvas_done(void) {}
+bool bf_video_shader(const char* name) { (void)name; return false; }
+bool bf_video_wants_xrgb(void) { return false; }
+uint32_t* bf_video_overlay(int rows, int* pitch, int* w) { (void)rows; (void)pitch; (void)w; return NULL; }
+void bf_video_overlay_show(bool on) { (void)on; }
+bool bf_video_has_overlay(void) { return false; }

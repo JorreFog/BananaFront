@@ -1,0 +1,645 @@
+// shader.c (BananaFront): BananaDS's copy below, unchanged; dsflip_log is BananaFront's log (kms.c). The game's
+// picture (an XRGB8888 dumb buffer at the core's size) is drawn with the shader into a buffer the size of its place on
+// the panel, shown 1:1.
+//
+// shader.c: SuperDrastic's GPU shader pass (src/shader.c in this repository's root, unchanged below this header), for
+// BananaDS's KMS frontend (kms.shader): each DS screen's buffer drawn with the fragment shader into a panel-sized
+// dumb buffer, which is shown 1:1. dsflip_log is BananaDS's log (frontend_kms.cpp).
+// shader.c: optional GPU shader pass for libdsflip (ES's per-system/per-game DraStic "shader" setting).
+//
+// ES passes the choice as DSHOOK_SHADER (what ROCKNIX's libdrastouch reads). "bilinear"/"none"/unset keeps
+// libdsflip's zero-copy path. Anything else: each DS screen buffer DraStic finished is drawn with that
+// fragment shader into a panel-sized (640x480) dumb buffer, which is then scanned out 1:1 instead of the
+// DraStic buffer. Same inputs as stock: u_texture (GL_LINEAR), u_texture_size = DS buffer size,
+// u_output_size = panel size, v_texcoord, SWIZ(); gl_FragCoord.y is flipped to count from the bottom,
+// as it does in stock's window, so pixel masks keep stock's phase.
+//
+// Shader sources: ROCKNIX's built-ins are read out of /usr/lib/libdrastouch.so at runtime (they are not
+// copied into this repo), recognised by their content. Other names load <name>.frag from DSFLIP_SHADER_DIR,
+// /storage/.config/drastic/shaders (the files the stock path uses), or shaders/ beside libdsflip.so.
+//
+// GL runs only on the presenter thread, in a surfaceless context (it renders only into imported dumb buffers).
+// The RG DS's GPU runs ARM's libmali (mali_kbase, /dev/mali0; there is no DRM render node), so libmali's EGL in
+// /usr/lib/mali is preferred over the system (Mesa) one. Everything is dlopen()ed: a missing or failing GL
+// stack just means no shader (zero-copy stays).
+#define _GNU_SOURCE
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <xf86drm.h>
+#include <drm_fourcc.h>
+
+void dsflip_log(const char *fmt, ...);
+#define SLOG(...) dsflip_log(__VA_ARGS__)
+
+typedef void *EGLDisplay, *EGLContext, *EGLConfig, *EGLImage;
+typedef intptr_t EGLAttrib; typedef int32_t EGLint; typedef unsigned EGLBoolean, EGLenum;
+typedef unsigned GLuint, GLenum; typedef int GLint, GLsizei; typedef float GLfloat; typedef char GLchar;
+
+static EGLDisplay (*eglGetPlatformDisplayEXT)(EGLenum, void *, const EGLint *);
+static EGLDisplay (*eglGetDisplay)(void *);
+static EGLint (*eglGetError)(void);
+static EGLBoolean (*eglInitialize)(EGLDisplay, EGLint *, EGLint *);
+static EGLBoolean (*eglBindAPI)(EGLenum);
+static EGLContext (*eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
+static EGLBoolean (*eglMakeCurrent)(EGLDisplay, void *, void *, EGLContext);
+static EGLBoolean (*eglChooseConfig)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
+static const char *(*eglQueryString)(EGLDisplay, EGLint);
+static void *(*eglGetProcAddress)(const char *);
+static EGLImage (*eglCreateImageKHR)(EGLDisplay, EGLContext, EGLenum, void *, const EGLint *);
+static EGLBoolean (*eglDestroyImageKHR)(EGLDisplay, EGLImage);
+static void (*glEGLImageTargetTexture2DOES)(GLenum, void *);
+static void *(*eglCreateSyncKHR)(EGLDisplay, EGLenum, const EGLint *);
+static EGLBoolean (*eglDestroySyncKHR)(EGLDisplay, void *);
+static EGLint (*eglDupNativeFenceFDANDROID)(EGLDisplay, void *);
+
+#define GLFN(ret, name, ...) static ret (*name)(__VA_ARGS__);
+GLFN(GLuint, glCreateShader, GLenum) GLFN(void, glShaderSource, GLuint, GLsizei, const GLchar *const *, const GLint *)
+GLFN(void, glCompileShader, GLuint) GLFN(void, glGetShaderiv, GLuint, GLenum, GLint *)
+GLFN(void, glGetShaderInfoLog, GLuint, GLsizei, GLsizei *, GLchar *) GLFN(GLuint, glCreateProgram, void)
+GLFN(void, glAttachShader, GLuint, GLuint) GLFN(void, glBindAttribLocation, GLuint, GLuint, const GLchar *)
+GLFN(void, glLinkProgram, GLuint) GLFN(void, glGetProgramiv, GLuint, GLenum, GLint *)
+GLFN(void, glGetProgramInfoLog, GLuint, GLsizei, GLsizei *, GLchar *) GLFN(void, glUseProgram, GLuint)
+GLFN(GLint, glGetUniformLocation, GLuint, const GLchar *) GLFN(void, glUniform1i, GLint, GLint)
+GLFN(void, glUniform1f, GLint, GLfloat) GLFN(void, glUniform2f, GLint, GLfloat, GLfloat)
+GLFN(void, glGenTextures, GLsizei, GLuint *) GLFN(void, glDeleteTextures, GLsizei, const GLuint *)
+GLFN(void, glBindTexture, GLenum, GLuint) GLFN(void, glTexParameteri, GLenum, GLenum, GLint)
+GLFN(void, glActiveTexture, GLenum) GLFN(void, glGenFramebuffers, GLsizei, GLuint *)
+GLFN(void, glDeleteFramebuffers, GLsizei, const GLuint *) GLFN(void, glBindFramebuffer, GLenum, GLuint)
+GLFN(void, glFramebufferTexture2D, GLenum, GLenum, GLenum, GLuint, GLint) GLFN(GLenum, glCheckFramebufferStatus, GLenum)
+GLFN(void, glViewport, GLint, GLint, GLsizei, GLsizei) GLFN(void, glVertexAttribPointer, GLuint, GLint, GLenum, unsigned char, GLsizei, const void *)
+GLFN(void, glEnableVertexAttribArray, GLuint) GLFN(void, glDrawArrays, GLenum, GLint, GLsizei)
+GLFN(void, glFinish, void) GLFN(void, glFlush, void)
+GLFN(const unsigned char *, glGetString, GLenum) GLFN(void, glPixelStorei, GLenum, GLint)
+GLFN(void, glTexImage2D, GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *)
+GLFN(void, glTexSubImage2D, GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *) GLFN(GLenum, glGetError, void) GLFN(void, glDisable, GLenum)
+GLFN(void, glClear, unsigned) GLFN(void, glClearColor, GLfloat, GLfloat, GLfloat, GLfloat)
+GLFN(void, glReadPixels, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *) GLFN(void, glDeleteProgram, GLuint)
+
+#define EGL_NONE 0x3038
+#define EGL_EXTENSIONS 0x3055
+#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
+#define EGL_OPENGL_ES_API 0x30A0
+#define EGL_CONTEXT_CLIENT_VERSION 0x3098
+#define EGL_RENDERABLE_TYPE 0x3040
+#define EGL_SURFACE_TYPE 0x3033
+#define EGL_OPENGL_ES2_BIT 4
+#define EGL_LINUX_DMA_BUF_EXT 0x3270
+#define EGL_WIDTH 0x3057
+#define EGL_HEIGHT 0x3056
+#define EGL_LINUX_DRM_FOURCC_EXT 0x3271
+#define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT 0x3273
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT 0x3274
+#define GL_TEXTURE_2D 0x0DE1
+#define GL_TEXTURE_MAG_FILTER 0x2800
+#define GL_TEXTURE_MIN_FILTER 0x2801
+#define GL_TEXTURE_WRAP_S 0x2802
+#define GL_TEXTURE_WRAP_T 0x2803
+#define GL_LINEAR 0x2601
+#define GL_NEAREST 0x2600
+#define GL_RGBA 0x1908
+#define GL_UNSIGNED_BYTE 0x1401
+#define GL_CLAMP_TO_EDGE 0x812F
+#define GL_FRAMEBUFFER 0x8D40
+#define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#define GL_VERTEX_SHADER 0x8B31
+#define GL_FRAGMENT_SHADER 0x8B30
+#define GL_COMPILE_STATUS 0x8B81
+#define GL_LINK_STATUS 0x8B82
+#define GL_TRIANGLE_STRIP 0x0005
+#define GL_FLOAT 0x1406
+#define GL_TEXTURE0 0x84C0
+#define GL_BLEND 0x0BE2
+#define GL_DITHER 0x0BD0
+
+static EGLDisplay dpy;
+static GLenum up_fmt; int shader_copy_mode;      /* set by the caller before shader_init */
+static GLuint up_tex[2]; static int up_w[2], up_h[2];
+/* a program and its uniforms; slow = the shader as asked for, fast = its built-in faster twin (if any) */
+typedef struct { GLuint prog; GLint u_tex, u_tsize, u_osize, u_fch; int nearest; } sprog;
+#define NFAST 4
+static sprog slow, fastc[NFAST], *fast = &fastc[0]; static int nfast; static const sprog *cur_prog;
+int shader_fast = 1;
+int clear_first = 1;                                 /* kms.shader_clear: see quad() */                                 /* set by the caller before shader_init (kms.shader_fast) */
+static int fast_ok, fast_w, fast_h, fast_dw, fast_dh;
+static struct { int sw, sh, dw, dh; const sprog *p; } seen[4]; static int nseen;   /* pick(): each size's verdict */
+static int fast_check(int sw, int shh, int dw, int dhh);
+static void use(const sprog *p) { if (cur_prog != p || !p->prog) { glUseProgram(p->prog); cur_prog = p; } }
+/* a shader that draws the DS screen into part of the panel (ds-integer) says where, in panel pixels, with a line
+ * "dsflip-viewport: x y w h" in its source; libdsflip maps touches into that rectangle. "dsflip-viewport: integer"
+ * means the largest whole multiple of 256x192 that fits the panel, centred: 512x384 at 64,48 on the RG DS's 640x480,
+ * all of it on the RG DS Plus's 1024x768 (4x) */
+static int vp[4], vp_integer;
+int shader_viewport(int *v, int pw, int ph) {
+    if (vp_integer) {
+        int k = pw / 256 < ph / 192 ? pw / 256 : ph / 192; if (k < 1) k = 1;
+        vp[2] = 256 * k; vp[3] = 192 * k; vp[0] = (pw - vp[2]) / 2; vp[1] = (ph - vp[3]) / 2;
+        if (vp[2] == pw && vp[3] == ph) return 0;       /* fills the panel: nothing to map */
+    }
+    if (vp[2] <= 0 || vp[3] <= 0) return 0;
+    for (int i = 0; i < 4; i++) v[i] = vp[i];
+    return 1;
+}
+static int drm_fd;
+
+/* ---- shader sources ---- */
+static char *slurp(const char *path, size_t *n) {
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
+    char *b = len > 0 ? malloc(len + 1) : 0;
+    if (b && fread(b, 1, len, f) != (size_t)len) { free(b); b = 0; }
+    fclose(f);
+    if (b) { b[len] = 0; *n = len; }
+    return b;
+}
+/* ROCKNIX's built-ins, recognised in libdrastouch.so by what they contain (strings are NUL-separated) */
+static char *drastouch_source(const char *name, int vertex) {
+    static const struct { const char *name, *has, *hasnt; } sig[] = {
+        { "sharp-shimmerless", "pixel_tl", 0 },
+        { "lcd1x-nds-color", "vec3(1.91)", 0 },
+        { "lcd3x", "col_r", "1.91" },
+        { "scanlines", "float scan", 0 },
+        { "quilez", "15.0", 0 },
+        { "sharp-bilinear", "region_range", "gl_FragCoord" },
+    };
+    const char *has = vertex ? "attribute vec2 a_position" : 0, *hasnt = 0;
+    for (size_t i = 0; !vertex && i < sizeof sig / sizeof sig[0]; i++)
+        if (!strcmp(name, sig[i].name)) { has = sig[i].has; hasnt = sig[i].hasnt; }
+    if (!has) return 0;
+    size_t n; char *d = slurp("/usr/lib/libdrastouch.so", &n); if (!d) return 0;
+    char *r = 0;
+    for (size_t i = 0; i < n && !r; ) {
+        char *s = d + i; size_t l = strnlen(s, n - i);
+        if (l > 40 && (vertex ? strstr(s, "gl_Position") : strstr(s, "gl_FragColor")) && strstr(s, has) &&
+            (!hasnt || !strstr(s, hasnt))) r = strdup(s);
+        i += l + 1;
+    }
+    free(d);
+    return r;
+}
+static const char *default_vs =
+    "attribute vec2 a_position;\nattribute vec2 a_texcoord;\nvarying vec2 v_texcoord;\n"
+    "void main() {\n    gl_Position = vec4(a_position, 0.0, 1.0);\n    v_texcoord = a_texcoord;\n}\n";
+
+/* stock's gl_FragCoord.y counts from the window's bottom; ours from the buffer's first row (the panel's top) */
+static char *flip_fragcoord(const char *src) {
+    const char *tok = "gl_FragCoord", *rep = "dsf_FragCoord()";
+    size_t n = 0; for (const char *p = src; (p = strstr(p, tok)); p += strlen(tok)) n++;
+    char *out = malloc(strlen(src) + n * (strlen(rep) + 1) + 1), *o = out;
+    for (const char *p = src, *q; ; p = q + strlen(tok)) {
+        q = strstr(p, tok);
+        if (!q) { strcpy(o, p); break; }
+        memcpy(o, p, q - p); o += q - p; strcpy(o, rep); o += strlen(rep);
+    }
+    return out;
+}
+
+static GLuint compile(GLenum type, const char *pre, const char *src) {
+    GLuint s = glCreateShader(type);
+    const char *parts[2] = { pre, src };
+    glShaderSource(s, 2, parts, 0); glCompileShader(s);
+    GLint okc = 0; glGetShaderiv(s, GL_COMPILE_STATUS, &okc);
+    if (!okc) { char log[1024] = ""; glGetShaderInfoLog(s, sizeof log, 0, log); SLOG("[shader] compile failed: %s\n", log); return 0; }
+    return s;
+}
+
+/* ---- EGL images of dumb buffers ---- */
+typedef struct { uint32_t handle; int w, h, pitch; uint64_t gen; EGLImage img; GLuint tex, fbo; } gimg;
+/* must hold every buffer that cycles (DraStic's 2x6 at 2x, our 2x6 outputs, plus the 1x ones from startup):
+ * an eviction means re-importing a dma-buf every frame, and the kernel's GPU IOMMU mapping then interrupts every
+ * CPU core (DraStic's too). shader_imports counts imports so a miss shows up in the log. */
+#define NCACHE 64
+static gimg cache[NCACHE]; static int ncache, cache_next, imports;
+int shader_imports(void) { int n = imports; imports = 0; return n; }
+
+static gimg *image_for(uint32_t handle, int w, int h, int pitch, uint64_t gen, int target) {
+    for (int i = 0; i < ncache; i++) if (cache[i].gen == gen) return &cache[i];
+    gimg *g = ncache < NCACHE ? &cache[ncache++] : &cache[cache_next++ % NCACHE];
+    imports++;
+    if (g->img) {                        /* evict */
+        if (g->fbo) glDeleteFramebuffers(1, &g->fbo);
+        glDeleteTextures(1, &g->tex); eglDestroyImageKHR(dpy, g->img);
+    }
+    memset(g, 0, sizeof *g);
+    int prime = -1;
+    if (drmPrimeHandleToFD(drm_fd, handle, DRM_CLOEXEC | DRM_RDWR, &prime)) { SLOG("[shader] prime export failed\n"); return 0; }
+    EGLint at[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
+                    EGL_DMA_BUF_PLANE0_FD_EXT, prime, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0, EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch, EGL_NONE };
+    g->img = eglCreateImageKHR(dpy, 0, EGL_LINUX_DMA_BUF_EXT, 0, at);
+    close(prime);
+    if (!g->img) { SLOG("[shader] eglCreateImage %dx%d failed\n", w, h); return 0; }
+    glGenTextures(1, &g->tex); glBindTexture(GL_TEXTURE_2D, g->tex);
+    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, g->img);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);   /* stock's texture is GL_LINEAR too */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    if (target) {
+        glGenFramebuffers(1, &g->fbo); glBindFramebuffer(GL_FRAMEBUFFER, g->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g->tex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) { SLOG("[shader] render target %dx%d incomplete\n", w, h); return 0; }
+    }
+    g->handle = handle; g->w = w; g->h = h; g->pitch = pitch; g->gen = gen;
+    return g;
+}
+
+/* ---- public ---- */
+const char *shader_name(void) {
+    const char *s = getenv("DSFLIP_SHADER"); if (!s) s = getenv("DSHOOK_SHADER");
+    if (!s || !*s || !strcmp(s, "none") || !strcmp(s, "bilinear")) return 0;
+    return s;
+}
+
+static sprog make_prog(const char *vsrc, const char *pre, const char *fsrc) {
+    sprog r = {0};
+    GLuint v = compile(GL_VERTEX_SHADER, "", vsrc), f = compile(GL_FRAGMENT_SHADER, pre, fsrc);
+    if (!v || !f) return r;
+    GLuint pg = glCreateProgram();
+    glAttachShader(pg, v); glAttachShader(pg, f);
+    glBindAttribLocation(pg, 0, "a_position"); glBindAttribLocation(pg, 1, "a_texcoord");
+    glLinkProgram(pg);
+    GLint okl = 0; glGetProgramiv(pg, GL_LINK_STATUS, &okl);
+    if (!okl) { char log[1024] = ""; glGetProgramInfoLog(pg, sizeof log, 0, log); SLOG("[shader] link failed: %s\n", log); glDeleteProgram(pg); return r; }
+    r.prog = pg;
+    glUseProgram(pg); cur_prog = 0;
+    r.u_tex = glGetUniformLocation(pg, "u_texture"); r.u_tsize = glGetUniformLocation(pg, "u_texture_size");
+    r.u_osize = glGetUniformLocation(pg, "u_output_size"); r.u_fch = glGetUniformLocation(pg, "dsf_fch");
+    glUniform1i(r.u_tex, 0);
+    r.nearest = strstr(fsrc, "dsflip-filter: nearest") != 0;
+    return r;
+}
+
+/* ds-grid-2x (SuperDrastic's shaders/ds-grid-2x.frag) where the panel is a whole multiple of the DS screen with no
+ * border, 4x (the RG DS Plus's 1024x768): the same picture with the per-pixel work cut down. The Mali-G52's compiler
+ * doesn't hoist expressions of uniforms only out of the per-pixel code, so the file's scale, origin, letterbox test,
+ * cell position and brightness are worked out for every pixel. Here: the scale is 4 (no letterbox), a texel is
+ * fetched with GL_NEAREST at the pixel's own coordinate (the file fetches it at the centre of floor(pixel * texels /
+ * pixels) with GL_LINEAR: the same texel), a pixel is on a grid line when it is the last of its 4-pixel cell (fract
+ * of its DS-pixel coordinate (k + 0.5) / 4 = 0.875; the others 0.125-0.625), and the line darkness and compensation
+ * are constants folded at compile time. The light math (c * c * k, clamped, sqrt) is the file's, in its order.
+ * fast_check proves it gives the same bytes before it is used. */
+#define GRID2X_HEAD \
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" \
+    "// dsflip-filter: nearest\n" \
+    "varying vec2 v_texcoord;\nuniform sampler2D u_texture;\n" \
+    "const float S = 4.0;\nconst float GRID_WIDTH_PX = 1.0;\nconst float GRID_LEVEL = 0.55;\nconst float GRID_COMPENSATE = 0.5;\n" \
+    "const float meanAxis = min(GRID_WIDTH_PX / S, 1.0);\n" \
+    "const float meanCov = meanAxis + meanAxis - meanAxis * meanAxis;\n" \
+    "const float bright = mix(1.0, 1.0 / mix(1.0, GRID_LEVEL, meanCov), GRID_COMPENSATE);\n" \
+    "const float K_LINE = mix(1.0, GRID_LEVEL, 1.0) * bright;\n" \
+    "const float K_CELL = mix(1.0, GRID_LEVEL, 0.0) * bright;\n" \
+    "void main() {\n" \
+    "    vec4 c = SWIZ(texture2D(u_texture, v_texcoord));\n" \
+    "    vec2 f = fract(v_texcoord * vec2(256.0, 192.0));\n" \
+    "    bool line = max(f.x, f.y) > 0.75;\n"
+/* the twins, cheapest first: the first one whose test picture matches is used. (0) sqrt(c * c * k) = c * sqrt(k) when
+ * under 1: one multiply and a clamp a channel, if the GPU's rounding agrees to the byte; (1) the file's light math */
+static const char *fast_grid2x_fs[] = {
+    GRID2X_HEAD
+    "    gl_FragColor = vec4(min(c.rgb * (line ? sqrt(K_LINE) : sqrt(K_CELL)), vec3(1.0)), c.a);\n"
+    "}\n",
+    GRID2X_HEAD
+    "    vec3 lin = c.rgb * c.rgb * (line ? K_LINE : K_CELL);\n"
+    "    gl_FragColor = vec4(sqrt(min(lin, vec3(1.0))), c.a);\n"
+    "}\n",
+    /* (2) render.scale=3 (768x576 frames on 1024x768, experimental): the file's texel, floor(pixel * 3 / 4), fetched
+     * at its centre (twins 0 and 1 fetch the nearest one to the pixel's centre, another texel there), twin 0's light
+     * math. Last, so at 2x (twin 0 passes) nothing changes */
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
+    "// dsflip-filter: nearest\n"
+    "varying vec2 v_texcoord;\nuniform sampler2D u_texture;\n"
+    "const float S = 4.0;\nconst float GRID_WIDTH_PX = 1.0;\nconst float GRID_LEVEL = 0.55;\nconst float GRID_COMPENSATE = 0.5;\n"
+    "const float meanAxis = min(GRID_WIDTH_PX / S, 1.0);\n"
+    "const float meanCov = meanAxis + meanAxis - meanAxis * meanAxis;\n"
+    "const float bright = mix(1.0, 1.0 / mix(1.0, GRID_LEVEL, meanCov), GRID_COMPENSATE);\n"
+    "const float K_LINE = mix(1.0, GRID_LEVEL, 1.0) * bright;\n"
+    "const float K_CELL = mix(1.0, GRID_LEVEL, 0.0) * bright;\n"
+    "void main() {\n"
+    "    vec2 t = floor(floor(v_texcoord * vec2(1024.0, 768.0)) * 0.75);\n"
+    "    vec4 c = SWIZ(texture2D(u_texture, (t + 0.5) / vec2(768.0, 576.0)));\n"
+    "    vec2 f = fract(v_texcoord * vec2(256.0, 192.0));\n"
+    "    bool line = max(f.x, f.y) > 0.75;\n"
+    "    gl_FragColor = vec4(min(c.rgb * (line ? sqrt(K_LINE) : sqrt(K_CELL)), vec3(1.0)), c.a);\n"
+    "}\n",
+};
+
+/* on the presenter thread; returns 0 if the shader can't be used (the caller stays zero-copy) */
+static char cur_name[64];   /* the shader asked for (shader_grid4_lut) */
+int shader_init(int fd, const char *name) {
+    drm_fd = fd;
+    snprintf(cur_name, sizeof cur_name, "%s", name ? name : "");
+    /* EGL and GL once: a later call (another shader chosen while the game runs) only makes the new program, in the
+     * same context, so the frames' imported images stay valid */
+    static int ready; static const char *dir = "/usr/lib/mali/", *how = "default"; static EGLint maj, min;
+    if (!ready) {
+    /* ROCKNIX exports MALI_DEFAULT_DISPLAY=wayland system-wide; sway is stopped while we run, so libmali's default
+     * display would fail (and would take a GBM device passed to eglGetDisplay for a wl_display: crash). DraStic
+     * itself doesn't use libmali (SDL dummy driver), so this only affects our context. */
+    setenv("MALI_DEFAULT_DISPLAY", "gbm", 1);
+    void *egl = dlopen("/usr/lib/mali/libEGL.so.1", RTLD_NOW | RTLD_LOCAL), *gl = 0;
+    if (egl) gl = dlopen("/usr/lib/mali/libGLESv2.so.2", RTLD_NOW | RTLD_LOCAL);
+    else { dir = ""; egl = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL); gl = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_LOCAL); }
+    if (!egl || !gl) { SLOG("[shader] no libEGL/libGLESv2\n"); return 0; }
+#define E(n) if (!(*(void **)&n = dlsym(egl, #n))) { SLOG("[shader] missing " #n "\n"); return 0; }
+    E(eglGetDisplay) E(eglGetError) E(eglInitialize) E(eglBindAPI) E(eglCreateContext) E(eglMakeCurrent) E(eglChooseConfig) E(eglQueryString) E(eglGetProcAddress)
+#define X(n) if (!(*(void **)&n = eglGetProcAddress(#n))) { SLOG("[shader] missing " #n "\n"); return 0; }
+    *(void **)&eglGetPlatformDisplayEXT = eglGetProcAddress("eglGetPlatformDisplayEXT");
+    X(eglCreateImageKHR) X(eglDestroyImageKHR) X(glEGLImageTargetTexture2DOES)
+    *(void **)&eglCreateSyncKHR = eglGetProcAddress("eglCreateSyncKHR");
+    *(void **)&eglDestroySyncKHR = eglGetProcAddress("eglDestroySyncKHR");
+    *(void **)&eglDupNativeFenceFDANDROID = eglGetProcAddress("eglDupNativeFenceFDANDROID");
+#define G(n) if (!(*(void **)&n = dlsym(gl, #n))) { SLOG("[shader] missing " #n "\n"); return 0; }
+    G(glCreateShader) G(glShaderSource) G(glCompileShader) G(glGetShaderiv) G(glGetShaderInfoLog) G(glCreateProgram)
+    G(glAttachShader) G(glBindAttribLocation) G(glLinkProgram) G(glGetProgramiv) G(glGetProgramInfoLog) G(glUseProgram)
+    G(glGetUniformLocation) G(glUniform1i) G(glUniform1f) G(glUniform2f) G(glGenTextures) G(glDeleteTextures)
+    G(glBindTexture) G(glTexParameteri) G(glActiveTexture) G(glGenFramebuffers) G(glDeleteFramebuffers)
+    G(glBindFramebuffer) G(glFramebufferTexture2D) G(glCheckFramebufferStatus) G(glViewport) G(glVertexAttribPointer)
+    G(glEnableVertexAttribArray) G(glDrawArrays) G(glFinish) G(glFlush)
+    G(glGetString) G(glPixelStorei) G(glTexImage2D) G(glTexSubImage2D) G(glGetError) G(glDisable) G(glReadPixels) G(glDeleteProgram) G(glClear) G(glClearColor)
+
+    /* a display: libmali's default one (GBM, see above), else Mesa's surfaceless platform (needs a render node) */
+    dpy = eglGetDisplay(0);
+    if (!dpy || !eglInitialize(dpy, &maj, &min)) {
+        SLOG("[shader] default EGL display: error 0x%x\n", eglGetError());
+        how = "surfaceless"; dpy = *dir || !eglGetPlatformDisplayEXT ? 0 : eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA, 0, 0);
+        if (!dpy || !eglInitialize(dpy, &maj, &min)) { SLOG("[shader] EGL init failed\n"); return 0; }
+    }
+    const char *ext = eglQueryString(dpy, EGL_EXTENSIONS);
+    if (!ext || !strstr(ext, "EGL_EXT_image_dma_buf_import")) { SLOG("[shader] no dma-buf import\n"); return 0; }
+    eglBindAPI(EGL_OPENGL_ES_API);
+    EGLint ca[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    EGLConfig cfg = 0;
+    if (!strstr(ext, "EGL_KHR_no_config_context")) {
+        EGLint want[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, 0, EGL_NONE }, n = 0;
+        if (!eglChooseConfig(dpy, want, &cfg, 1, &n) || n < 1) { SLOG("[shader] no EGL config\n"); return 0; }
+    }
+    EGLContext ctx = eglCreateContext(dpy, cfg, 0, ca);
+    if (!ctx || !eglMakeCurrent(dpy, 0, 0, ctx)) { SLOG("[shader] no surfaceless GLES2 context\n"); return 0; }
+
+    /* upload path: DraStic's XRGB8888 is B,G,R,X in memory; BGRA uploads need no swizzle in the shader */
+    const char *gx = (const char *)glGetString(0x1F03 /* GL_EXTENSIONS */);
+    up_fmt = gx && strstr(gx, "GL_EXT_texture_format_BGRA8888") ? 0x80E1 /* GL_BGRA_EXT */ : 0x1908 /* GL_RGBA */;
+    ready = 1;
+    }
+    /* .frag files: DSFLIP_SHADER_DIR, ROCKNIX's DraStic shader folder, then shaders/ beside libdsflip.so (the
+     * standalone package's layout) */
+    char path[600] = "", dirs[3][512]; size_t n; int nd = 0;
+    const char *sdir = getenv("DSFLIP_SHADER_DIR");
+    if (sdir && *sdir) snprintf(dirs[nd++], sizeof dirs[0], "%s", sdir);
+    snprintf(dirs[nd++], sizeof dirs[0], "/storage/.config/drastic/shaders");
+    Dl_info di;
+    if (dladdr((void *)shader_init, &di) && di.dli_fname && strrchr(di.dli_fname, '/'))
+        snprintf(dirs[nd++], sizeof dirs[0], "%.*s/shaders", (int)(strrchr(di.dli_fname, '/') - di.dli_fname), di.dli_fname);
+    char *fs = drastouch_source(name, 0), *vs = drastouch_source(name, 1);
+    const char *from = "libdrastouch";
+    for (int i = 0; i < nd && !fs; i++) {
+        snprintf(path, sizeof path, "%s/%s.frag", dirs[i], name);
+        fs = slurp(path, &n); from = path;
+    }
+    if (!fs) { SLOG("[shader] unknown shader \"%s\" (not built into libdrastouch, no %s.frag in the shader folders)\n", name, name); return 0; }
+    { const char *m = strstr(fs, "dsflip-viewport:"); char word[16];
+      vp_integer = 0;
+      if (m && sscanf(m + 16, "%d %d %d %d", &vp[0], &vp[1], &vp[2], &vp[3]) == 4)
+          SLOG("[shader] draws the DS screen at %d,%d %dx%d of the panel (touch follows)\n", vp[0], vp[1], vp[2], vp[3]);
+      else if (m && sscanf(m + 16, "%15s", word) == 1 && !strcmp(word, "integer")) {
+          vp_integer = 1; SLOG("[shader] draws the DS screen at a whole-number scale, centred (touch follows)\n");
+      } else vp[2] = vp[3] = 0; }
+    char *ffs = flip_fragcoord(fs);
+    const char *pre = up_fmt == 0x1908 && shader_copy_mode ? "#define SWIZ(c) (c).bgra\nuniform highp float dsf_fch;\n"
+                      "#define dsf_FragCoord() vec4(gl_FragCoord.x, dsf_fch - gl_FragCoord.y, gl_FragCoord.zw)\n"
+                    : "#define SWIZ(c) (c)\nuniform highp float dsf_fch;\n"
+                      "#define dsf_FragCoord() vec4(gl_FragCoord.x, dsf_fch - gl_FragCoord.y, gl_FragCoord.zw)\n";
+    sprog np = make_prog(vs ? vs : default_vs, pre, ffs);
+    /* a faster built-in twin of this shader (shader_fast): used only once a self-test on the GPU has drawn the same
+     * test picture through both, byte for byte, at the frames' sizes (see fast_check) */
+    sprog nf[NFAST] = {{0}};
+    int nn = 0;
+    if (shader_fast && !strcmp(name, "ds-grid-2x") && !vs)
+        for (size_t i = 0; i < sizeof fast_grid2x_fs / sizeof *fast_grid2x_fs && nn < NFAST; i++)
+            if ((nf[nn] = make_prog(default_vs, pre, fast_grid2x_fs[i])).prog) nn++;
+    free(fs); free(ffs); free(vs);
+    if (!np.prog) { for (int i = 0; i < nn; i++) glDeleteProgram(nf[i].prog); return 0; }
+    if (slow.prog) glDeleteProgram(slow.prog);
+    for (int i = 0; i < nfast; i++) glDeleteProgram(fastc[i].prog);
+    slow = np; nfast = nn; memcpy(fastc, nf, sizeof fastc); fast = &fastc[0];
+    fast_ok = 0; fast_w = fast_h = fast_dw = fast_dh = 0; nseen = 0;
+    cur_prog = 0; use(&slow);
+    glDisable(GL_BLEND); glDisable(GL_DITHER);
+    SLOG("[shader] \"%s\" from %s, EGL %d.%d (%s%s, %s display)%s\n", name, from, maj, min, *dir ? dir : "system ", "libEGL", how,
+         nfast ? "; faster built-in twins, checked at the first frame" : "");
+    return 1;
+}
+
+int shader_fast_on(void) { return nfast && fast_ok; }
+
+/* the program in use for this draw: the fast twin when it passed its check at these sizes, else the shader itself */
+static sprog *pick(int sw, int shh, int dw, int dhh) {
+    if (!nfast) return &slow;
+    if (sw != fast_w || shh != fast_h || dw != fast_dw || dhh != fast_dh) {
+        /* each size's verdict kept (a test is a few frames' GPU time and two read-backs: once a size) */
+        int i = 0;
+        while (i < nseen && (seen[i].sw != sw || seen[i].sh != shh || seen[i].dw != dw || seen[i].dh != dhh)) i++;
+        if (i == nseen) {
+            fast_ok = fast_check(sw, shh, dw, dhh);
+            i = nseen < 4 ? nseen++ : 3;
+            seen[i].sw = sw; seen[i].sh = shh; seen[i].dw = dw; seen[i].dh = dhh; seen[i].p = fast_ok ? fast : 0;
+        }
+        fast_ok = seen[i].p != 0;
+        if (fast_ok) fast = (sprog *)seen[i].p;
+        fast_w = sw; fast_h = shh; fast_dw = dw; fast_dh = dhh;
+    }
+    return fast_ok ? fast : &slow;
+}
+static void bind_src(GLuint tex, const sprog *p) {
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, tex);
+    const GLint f = p->nearest ? GL_NEAREST : GL_LINEAR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+}
+static void quad(const sprog *p, int sw, int shh, int dw, int dhh) {
+    static const GLfloat pos[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
+    static const GLfloat uv[] = { 0, 0, 1, 0, 0, 1, 1, 1 };     /* buffer row 0 (panel top) at GL y = -1 */
+    glViewport(0, 0, dw, dhh);
+    /* a clear first, though the quad covers every pixel: without it the GPU reads each tile's old contents back
+     * from the buffer before drawing (a tile-based GPU keeps what a draw doesn't cover), 3 MB a panel a frame */
+    if (clear_first) glClear(0x4000 /* GL_COLOR_BUFFER_BIT */);
+    use(p);
+    glUniform2f(p->u_tsize, (GLfloat)sw, (GLfloat)shh);
+    glUniform2f(p->u_osize, (GLfloat)dw, (GLfloat)dhh);
+    glUniform1f(p->u_fch, (GLfloat)dhh);
+    glVertexAttribPointer(0, 2, GL_FLOAT, 0, 0, pos); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, 0, 0, uv); glEnableVertexAttribArray(1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/* the fast twin's check: a test picture (every 8-bit level in every channel, at every position in the grid's cells)
+ * drawn through both programs into GL textures of the panel's size and read back; the twin is used only if every
+ * byte is the same. Once per frame size (the first frame), ~1 frame of GPU time */
+static int fast_check(int sw, int shh, int dw, int dhh) {
+    uint8_t *in = malloc((size_t)sw * shh * 4), *a = malloc((size_t)dw * dhh * 4), *b = malloc((size_t)dw * dhh * 4);
+    GLuint t[2] = {0}, fb = 0;
+    int ok = 0;
+    if (!in || !a || !b) goto out;
+    for (int y = 0; y < shh; y++)
+        for (int x = 0; x < sw; x++) {
+            uint8_t *q = in + ((size_t)y * sw + x) * 4;
+            q[0] = (uint8_t)(x + y * 37); q[1] = (uint8_t)(x * 3 + y * 11 + 85); q[2] = (uint8_t)(x * 7 + y * 5 + 170); q[3] = 255;
+        }
+    glGenTextures(2, t); glGenFramebuffers(1, &fb);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, t[0]);
+    glPixelStorei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, sw, shh, 0, GL_RGBA, GL_UNSIGNED_BYTE, in);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, t[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, dw, dhh, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t[1], 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) { SLOG("[shader] fast twin: test target incomplete\n"); goto out; }
+    glPixelStorei(0x0D05 /* GL_PACK_ALIGNMENT */, 4);
+    for (int i = -1; i < nfast && !ok; i++) {         /* -1: the shader itself, the reference */
+        const sprog *p = i < 0 ? &slow : &fastc[i];
+        bind_src(t[0], p);
+        quad(p, sw, shh, dw, dhh);
+        glReadPixels(0, 0, dw, dhh, GL_RGBA, GL_UNSIGNED_BYTE, i < 0 ? a : b);
+        if (glGetError()) { SLOG("[shader] fast twin: GL error in its test\n"); goto out; }
+        if (i < 0) continue;
+        long diff = 0, first = -1;
+        for (size_t k = 0; k < (size_t)dw * dhh; k++)
+            if (memcmp(a + k * 4, b + k * 4, 3)) { diff++; if (first < 0) first = (long)k; }
+        if (!diff) {
+            ok = 1; fast = &fastc[i];
+            SLOG("[shader] fast twin %d: the same %dx%d picture as the shader's from %dx%d frames (%ld pixels compared): on\n", i, dw, dhh, sw, shh, (long)dw * dhh);
+        } else SLOG("[shader] fast twin %d: %ld of %ld pixels differ (first at %ld,%ld: %02x%02x%02x vs %02x%02x%02x)\n", i, diff, (long)dw * dhh,
+                    first % dw, first / dw, a[first * 4], a[first * 4 + 1], a[first * 4 + 2], b[first * 4], b[first * 4 + 1], b[first * 4 + 2]);
+    }
+    if (!ok) SLOG("[shader] no fast twin matches: the shader itself draws\n");
+out:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (fb) glDeleteFramebuffers(1, &fb);
+    if (t[0]) glDeleteTextures(2, t);
+    free(in); free(a); free(b);
+    use(&slow);
+    return ok;
+}
+
+/* kms.grid_cpu: ds-grid-2x at 1:1 on 1024x768 frames (render.scale=4) is a per-byte function of the input byte and
+ * of the pixel's place in its DS pixel's 4x4 cell. This draws a test picture (every input byte in each channel at
+ * every place in the cell) through the shader itself (the file's program, not a twin), reads it back, and fills
+ * lut[0][v] (a cell pixel: column and row 0-2 of the cell) and lut[1][v] (a grid-line pixel: column or row 3) from it.
+ * 1 only when every pixel of the picture agrees with the two tables (so the tables give the shader's bytes) and
+ * every byte value was seen in both; the GPU's own output, so no float rounding is guessed on the CPU */
+int shader_grid4_lut(unsigned char lut[2][256]) {
+    const int sw = 1024, shh = 768, dw = 1024, dhh = 768;
+    if (!slow.prog || strcmp(cur_name, "ds-grid-2x")) return 0;
+    uint8_t *in = malloc((size_t)sw * shh * 4), *a = malloc((size_t)dw * dhh * 4);
+    short seen[2][256];
+    GLuint t[2] = {0}, fb = 0;
+    int ok = 0;
+    long bad = 0;
+    memset(seen, -1, sizeof seen);
+    if (!in || !a) goto out;
+    for (int y = 0; y < shh; y++)
+        for (int x = 0; x < sw; x++) {
+            uint8_t *q = in + ((size_t)y * sw + x) * 4;
+            const int d = (x >> 2) + (y >> 2) * 7;   /* (the DS pixel: every byte reaches every place in a cell) */
+            q[0] = (uint8_t)(d + (x & 3) * 61 + (y & 3) * 17); q[1] = (uint8_t)(q[0] * 3 + 85); q[2] = (uint8_t)(q[0] * 7 + 170); q[3] = 255;
+        }
+    glGenTextures(2, t); glGenFramebuffers(1, &fb);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, t[0]);
+    glPixelStorei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, sw, shh, 0, GL_RGBA, GL_UNSIGNED_BYTE, in);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, t[1]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, dw, dhh, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t[1], 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) goto out;
+    glPixelStorei(0x0D05 /* GL_PACK_ALIGNMENT */, 4);
+    bind_src(t[0], &slow);
+    quad(&slow, sw, shh, dw, dhh);
+    glReadPixels(0, 0, dw, dhh, GL_RGBA, GL_UNSIGNED_BYTE, a);
+    if (glGetError()) goto out;
+    for (int y = 0; y < dhh; y++)
+        for (int x = 0; x < dw; x++) {
+            const int c = (x & 3) == 3 || (y & 3) == 3;
+            const uint8_t *i = in + ((size_t)y * sw + x) * 4, *o = a + ((size_t)y * dw + x) * 4;
+            for (int k = 0; k < 3; k++) {
+                if (seen[c][i[k]] < 0) seen[c][i[k]] = o[k];
+                else if (seen[c][i[k]] != o[k]) bad++;
+            }
+        }
+    ok = !bad;
+    for (int c = 0; c < 2; c++)
+        for (int v = 0; v < 256; v++) {
+            if (seen[c][v] < 0) ok = 0;
+            else lut[c][v] = (unsigned char)seen[c][v];
+        }
+    SLOG("[shader] grid tables for the 2D engine: %s (%ld bytes of %ld disagree with them)\n", ok ? "the shader's own bytes, every place in the cell" : "NOT usable", bad, (long)dw * dhh * 3);
+out:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (fb) glDeleteFramebuffers(1, &fb);
+    if (t[0]) glDeleteTextures(2, t);
+    free(in); free(a);
+    use(&slow);
+    return ok;
+}
+
+/* draw src (a DraStic screen buffer) into dst (a panel-sized buffer); finish: block until the GPU is done */
+int shader_draw(uint32_t sh, int sw, int shh, int sp, uint64_t sgen, uint32_t dh, int dw, int dhh, int dp, uint64_t dgen, int finish) {
+    gimg *s = image_for(sh, sw, shh, sp, sgen, 0), *d = image_for(dh, dw, dhh, dp, dgen, 1);
+    if (!s || !d) return -1;
+    const sprog *p = pick(sw, shh, dw, dhh);
+    glBindFramebuffer(GL_FRAMEBUFFER, d->fbo);
+    bind_src(s->tex, p);
+    quad(p, sw, shh, dw, dhh);
+    if (finish) glFinish();
+    return glGetError() ? -1 : 0;
+}
+
+/* a sync_file that signals when everything drawn so far is done; -1 (after waiting for the GPU) if unsupported */
+int shader_fence(void) {
+    int f = -1;
+    void *sy = eglCreateSyncKHR && eglDupNativeFenceFDANDROID ? eglCreateSyncKHR(dpy, 0x3144 /* EGL_SYNC_NATIVE_FENCE_ANDROID */, 0) : 0;
+    glFlush();
+    if (sy) { f = eglDupNativeFenceFDANDROID(dpy, sy); eglDestroySyncKHR(dpy, sy); }
+    if (f < 0) glFinish();
+    return f;
+}
+
+/* copy path: upload a DraStic frame from ordinary (cached) memory into a GL-owned texture, then draw it into dst.
+ * Like stock SDL: nothing DraStic writes is imported into the GPU. GL copies the pixels before glTexSubImage2D
+ * returns, so the caller can hand the buffer back to DraStic right away. */
+int shader_draw_mem(int panel, const void *px, int sw, int shh, int sp, uint32_t dh, int dw, int dhh, int dp, uint64_t dgen, int finish) {
+    gimg *d = image_for(dh, dw, dhh, dp, dgen, 1);
+    if (!d || panel < 0 || panel > 1) return -1;
+    glActiveTexture(GL_TEXTURE0);
+    if (!up_tex[panel]) glGenTextures(1, &up_tex[panel]);
+    glBindTexture(GL_TEXTURE_2D, up_tex[panel]);
+    glPixelStorei(0x0CF5 /* GL_UNPACK_ALIGNMENT */, 4);
+    if (up_w[panel] != sw || up_h[panel] != shh) {
+        glTexImage2D(GL_TEXTURE_2D, 0, up_fmt, sw, shh, 0, up_fmt, 0x1401 /* GL_UNSIGNED_BYTE */, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        up_w[panel] = sw; up_h[panel] = shh;
+    }
+    if (sp == sw * 4) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sw, shh, up_fmt, 0x1401, px);
+    else for (int y = 0; y < shh; y++) glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, sw, 1, up_fmt, 0x1401, (const char *)px + (size_t)y * sp);
+    const sprog *p = pick(sw, shh, dw, dhh);
+    glBindFramebuffer(GL_FRAMEBUFFER, d->fbo);
+    bind_src(up_tex[panel], p);
+    quad(p, sw, shh, dw, dhh);
+    if (finish) glFinish();
+    return glGetError() ? -1 : 0;
+}

@@ -9,6 +9,7 @@
 //   (one frame per refresh, the lowest latency KMS gives without racing the scanout).
 #define _GNU_SOURCE
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,29 @@ typedef struct {
     size_t size;
 } buf_t;
 
+int shader_init(int fd, const char* name);
+int shader_draw(uint32_t sh, int sw, int shh, int sp, uint64_t sgen, uint32_t dh, int dw, int dhh, int dp, uint64_t dgen, int finish);
+extern int shader_fast;
+void dsflip_log(const char* fmt, ...)
+{
+    char b[600];
+    va_list a;
+    va_start(a, fmt);
+    vsnprintf(b, sizeof b, fmt, a);
+    va_end(a);
+    bf_log("%s", b);
+}
+
 static struct {
+    buf_t out[NBUF];   // the shader's output: the picture's place on the panel, shown 1:1
+    int out_shown, out_pending;
+    bool shader;
+    char shader_name[64];
+    uint64_t gen;      // bumped whenever buffers are made again (the shader caches its imports by these numbers)
+    uint32_t ov, ov_fb, ov_crtc, ov_sx, ov_sy, ov_sw, ov_sh, ov_cx, ov_cy, ov_cw, ov_ch;  // the overlay plane
+    buf_t ovb[2];
+    int ov_draw, ov_rows;
+    bool ov_on, ov_was;
     buf_t canvas[2];   // the menu: panel-sized XRGB8888, on the primary plane while the menu is open
     int canvas_shown;
     int fd;
@@ -49,7 +72,7 @@ static struct {
     uint8_t* cpu_src;  // !hw: the core's picture, scaled into the buffer at commit
     int cpu_pitch;
     double last_flip;
-} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1, .canvas_shown = -1 };
+} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1, .canvas_shown = -1, .out_shown = -1, .out_pending = -1 };
 
 static uint32_t prop(uint32_t obj, uint32_t type, const char* name)
 {
@@ -227,8 +250,24 @@ static bool pick_panel(const bf_video_opts* o)
             K.plane = pl->plane_id;
         drmModeFreePlane(pl);
     }
+    // an overlay plane for pop-ups over the game: the one in the lease, else a free one (master)
+    for (uint32_t j = 0; pr && j < pr->count_planes && !K.ov; j++) {
+        drmModePlane* pl = drmModeGetPlane(K.fd, pr->planes[j]);
+        if (pl && (pl->possible_crtcs & (1u << idx)) && !pl->fb_id &&
+            propval(pl->plane_id, DRM_MODE_OBJECT_PLANE, "type") == DRM_PLANE_TYPE_OVERLAY)
+            K.ov = pl->plane_id;
+        drmModeFreePlane(pl);
+    }
     drmModeFreePlaneResources(pr);
     if (!K.plane) { bf_log("kms: no primary plane"); return false; }
+    if (K.ov) {
+        const uint32_t P = DRM_MODE_OBJECT_PLANE;
+        K.ov_fb = prop(K.ov, P, "FB_ID"); K.ov_crtc = prop(K.ov, P, "CRTC_ID");
+        K.ov_sx = prop(K.ov, P, "SRC_X"); K.ov_sy = prop(K.ov, P, "SRC_Y"); K.ov_sw = prop(K.ov, P, "SRC_W");
+        K.ov_sh = prop(K.ov, P, "SRC_H"); K.ov_cx = prop(K.ov, P, "CRTC_X"); K.ov_cy = prop(K.ov, P, "CRTC_Y");
+        K.ov_cw = prop(K.ov, P, "CRTC_W"); K.ov_ch = prop(K.ov, P, "CRTC_H");
+    }
+    bf_log("kms: overlay plane %s", K.ov ? "there (pop-ups over the game)" : "none (pop-ups on banana-ui's panel only)");
     return true;
 }
 
@@ -270,7 +309,24 @@ bool bf_video_open(const bf_video_opts* o)
     return true;
 }
 
-static uint32_t drm_fmt(int core_fmt) { return core_fmt == RETRO_PIXEL_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB565; }
+static void add_overlay(drmModeAtomicReq* r);
+
+static uint32_t drm_fmt(int core_fmt)
+{
+    return core_fmt == RETRO_PIXEL_FORMAT_XRGB8888 || K.shader ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB565;
+}
+
+// the shader (Settings > Other systems > Shader): GL comes up here, once; false: none (the plane scales as without)
+bool bf_video_shader(const char* name)
+{
+    if (!name || !*name || K.fd < 0) return false;
+    shader_fast = 0;  // (its fast twins are DS-specific)
+    K.shader = shader_init(K.fd, name) != 0;
+    snprintf(K.shader_name, sizeof K.shader_name, "%s", name);
+    bf_log("kms: shader %s: %s", name, K.shader ? "on" : "unavailable, the plane scales instead");
+    return K.shader;
+}
+bool bf_video_wants_xrgb(void) { return K.shader; }
 
 // (re)make the buffers for a picture of w x h, and find out whether the plane scales it
 static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
@@ -287,8 +343,11 @@ static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
     unsigned bw = w > g_core.av.geometry.max_width ? w : g_core.av.geometry.max_width;
     unsigned bh = h > g_core.av.geometry.max_height ? h : g_core.av.geometry.max_height;
     if (bw > 2048 || bh > 2048) { bw = w; bh = h; }
+    K.gen += 0x1000;
     K.hw = mkbuf(&K.b[0], bw, bh, f);
-    if (K.hw && !getenv("BANANAFRONT_CPU_SCALE")) {
+    if (K.hw && K.shader) {
+        // (the shader's output is shown 1:1: the game's buffer is only the shader's input)
+    } else if (K.hw && !getenv("BANANAFRONT_CPU_SCALE")) {
         drmModeAtomicReq* r = drmModeAtomicAlloc();
         add_plane(r, &K.b[0], w, h);
         K.hw = drmModeAtomicCommit(K.fd, r, DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0;
@@ -300,6 +359,24 @@ static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
     for (int i = 0; i < NBUF; i++)
         if (!mkbuf(&K.b[i], bw, bh, f)) { bf_log("kms: no scanout buffers (%ux%u): %s", bw, bh, strerror(errno)); return false; }
     bf_log("kms: %s buffers %ux%u %s", K.hw ? "plane-scaled" : "panel-sized", bw, bh, f == DRM_FORMAT_RGB565 ? "RGB565" : "XRGB8888");
+    return true;
+}
+
+static bool ensure_out(unsigned sw, unsigned sh)
+{
+    int x, y, w, h;
+    const bool hw = K.hw;
+    K.hw = true;
+    dest_rect(sw, sh, &x, &y, &w, &h);
+    K.hw = hw;
+    if (K.out[0].fb && (int)K.out[0].w == w && (int)K.out[0].h == h) return true;
+    while (K.pending >= 0) bf_video_events();
+    for (int i = 0; i < NBUF; i++) freebuf(&K.out[i]);
+    K.out_shown = K.out_pending = -1;
+    K.gen += 0x1000;
+    for (int i = 0; i < NBUF; i++)
+        if (!mkbuf(&K.out[i], (uint32_t)w, (uint32_t)h, DRM_FORMAT_XRGB8888)) { bf_log("kms: no shader output buffers"); K.shader = false; return false; }
+    bf_log("kms: shader output %dx%d at %d,%d", w, h, x, y);
     return true;
 }
 
@@ -345,6 +422,25 @@ static void cpu_scale(buf_t* b)
     }
 }
 
+static void add_plane_out(drmModeAtomicReq* r, const buf_t* b)
+{
+    int x, y, w, h;
+    const bool hw = K.hw;
+    K.hw = true;
+    dest_rect(K.src_w, K.src_h, &x, &y, &w, &h);
+    K.hw = hw;
+    drmModeAtomicAddProperty(r, K.plane, K.p_fb, b->fb);
+    drmModeAtomicAddProperty(r, K.plane, K.p_crtc, K.crtc);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sx, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sy, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sw, (uint64_t)b->w << 16);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sh, (uint64_t)b->h << 16);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cx, x);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cy, y);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cw, b->w);
+    drmModeAtomicAddProperty(r, K.plane, K.p_ch, b->h);
+}
+
 bool bf_video_commit(bool dupe)
 {
     if (K.fd < 0 || K.pending >= 0) return false;
@@ -352,7 +448,26 @@ bool bf_video_commit(bool dupe)
     if (k < 0) return false;
     if (!dupe && !K.hw) cpu_scale(&K.b[k]);
     drmModeAtomicReq* r = drmModeAtomicAlloc();
-    add_plane(r, &K.b[k], K.src_w, K.src_h);
+    if (K.shader && ensure_out(K.src_w, K.src_h)) {
+        // the shader pass: the game's buffer -> an output buffer the size of its place on the panel (GPU, waited for:
+        // the commit must not show a half-drawn picture)
+        int o = dupe && K.out_shown >= 0 ? K.out_shown : -1;
+        if (o < 0) {
+            o = 0;
+            while (o == K.out_shown || o == K.out_pending) o++;
+            const buf_t* sb = &K.b[k];
+            if (shader_draw(sb->handle, (int)K.src_w, (int)K.src_h, (int)sb->pitch, K.gen + (uint64_t)k + 1, K.out[o].handle,
+                            (int)K.out[o].w, (int)K.out[o].h, (int)K.out[o].pitch, K.gen + (uint64_t)o + 101, 1)) {
+                bf_log("kms: the shader failed: off");
+                K.shader = false;
+            }
+        }
+        K.out_pending = o;
+        if (K.shader) add_plane_out(r, &K.out[o]);
+        else add_plane(r, &K.b[k], K.src_w, K.src_h);
+    } else
+        add_plane(r, &K.b[k], K.src_w, K.src_h);
+    add_overlay(r);
     uint32_t flags = DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
     if (K.need_modeset) flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_ALLOW_MODESET;
     int ret = drmModeAtomicCommit(K.fd, r, flags, NULL);
@@ -373,6 +488,7 @@ static void on_flip(int fd, unsigned seq, unsigned sec, unsigned usec, void* dat
     (void)fd; (void)seq; (void)sec; (void)usec; (void)data;
     K.shown = K.pending;
     K.pending = -1;
+    if (K.out_pending >= 0) { K.out_shown = K.out_pending; K.out_pending = -1; }
     K.last_flip = bf_now_ms();
 }
 
@@ -401,6 +517,58 @@ int bf_video_size(int* w, int* h)
 }
 
 uint32_t* bf_video_grab(int* w, int* h) { (void)w; (void)h; return NULL; }
+
+// ---- the overlay plane: pop-ups and the FPS counter over the game (ARGB8888, premultiplied), the panel's width, the
+// top rows only; in the game's own commit, so it costs nothing while hidden (the plane off)
+uint32_t* bf_video_overlay(int rows, int* pitch, int* w)
+{
+    if (K.fd < 0 || !K.ov || rows <= 0) return NULL;
+    if (K.ov_rows != rows) {
+        while (K.pending >= 0) bf_video_events();
+        if (K.ov_was) {  // (the plane off before its buffers go)
+            drmModeAtomicReq* r = drmModeAtomicAlloc();
+            drmModeAtomicAddProperty(r, K.ov, K.ov_fb, 0);
+            drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, 0);
+            drmModeAtomicCommit(K.fd, r, 0, NULL);
+            drmModeAtomicFree(r);
+            K.ov_was = false;
+        }
+        for (int i = 0; i < 2; i++) freebuf(&K.ovb[i]);
+        for (int i = 0; i < 2; i++)
+            if (!mkbuf(&K.ovb[i], K.mode.hdisplay, (uint32_t)rows, DRM_FORMAT_ARGB8888)) { K.ov = 0; return NULL; }
+        K.ov_rows = rows;
+    }
+    K.ov_draw ^= 1;  // (the other one may be on the panel)
+    *pitch = (int)K.ovb[K.ov_draw].pitch;
+    *w = K.mode.hdisplay;
+    memset(K.ovb[K.ov_draw].map, 0, K.ovb[K.ov_draw].size);
+    return K.ovb[K.ov_draw].map;
+}
+bool bf_video_has_overlay(void) { return K.ov != 0; }
+void bf_video_overlay_show(bool on) { K.ov_on = on && K.ov && K.ov_rows; }
+
+static void add_overlay(drmModeAtomicReq* r)
+{
+    if (!K.ov) return;
+    if (K.ov_on) {
+        const buf_t* b = &K.ovb[K.ov_draw];
+        drmModeAtomicAddProperty(r, K.ov, K.ov_fb, b->fb);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, K.crtc);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_sx, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_sy, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_sw, (uint64_t)b->w << 16);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_sh, (uint64_t)b->h << 16);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_cx, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_cy, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_cw, b->w);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_ch, b->h);
+        K.ov_was = true;
+    } else if (K.ov_was) {
+        drmModeAtomicAddProperty(r, K.ov, K.ov_fb, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, 0);
+        K.ov_was = false;
+    }
+}
 
 // ---- the menu's canvas: the primary plane shows a panel-sized XRGB8888 buffer instead of the game while it's open
 // (no scaling, no second plane needed: the lease has only the primary); the next game commit puts the game back
@@ -445,7 +613,8 @@ void bf_video_canvas_done(void)
     if (K.fd < 0) return;
     if (K.shown >= 0) {
         drmModeAtomicReq* r = drmModeAtomicAlloc();
-        add_plane(r, &K.b[K.shown], K.src_w, K.src_h);
+        if (K.shader && K.out_shown >= 0) add_plane_out(r, &K.out[K.out_shown]);
+        else add_plane(r, &K.b[K.shown], K.src_w, K.src_h);
         drmModeAtomicCommit(K.fd, r, 0, NULL);
         drmModeAtomicFree(r);
     }
@@ -459,6 +628,8 @@ void bf_video_close(void)
     // (the buffers go with the fd; closing it ends master or hands the lease back to banana-ui, which draws again)
     for (int i = 0; i < NBUF; i++) freebuf(&K.b[i]);
     for (int i = 0; i < 2; i++) freebuf(&K.canvas[i]);
+    for (int i = 0; i < NBUF; i++) freebuf(&K.out[i]);
+    for (int i = 0; i < 2; i++) freebuf(&K.ovb[i]);
     free(K.cpu_src);
     close(K.fd);
     K.fd = -1;

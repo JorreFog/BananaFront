@@ -1516,6 +1516,7 @@ static void ov_osd(long long t) {
     fclose(f);
 }
 /* blended over the frame, slid up by off rows */
+int bmenu_ov_argb;   /* BananaFront: drawing into a transparent ARGB8888 overlay plane (premultiplied), not over a picture */
 static void ov_blit(const ovpic *o, uint32_t *px, int pitch, int fh, int off) {
     for (int y = 0; y < o->h; y++) {
         int dy = o->y + y - off;
@@ -1526,6 +1527,15 @@ static void ov_blit(const ovpic *o, uint32_t *px, int pitch, int fh, int off) {
         for (int x = 0; x < o->w; x++) {
             int k = a[x];
             if (!k) continue;
+            if (bmenu_ov_argb) {   /* BananaFront */
+                uint32_t n = s[x], q = d[x], qa = q >> 24;
+                uint32_t r = ((n >> 16) & 255) * k / 255 + ((q >> 16) & 255) * (255 - k) / 255;
+                uint32_t g = ((n >> 8) & 255) * k / 255 + ((q >> 8) & 255) * (255 - k) / 255;
+                uint32_t b = (n & 255) * k / 255 + (q & 255) * (255 - k) / 255;
+                uint32_t na = k + qa * (255 - k) / 255;
+                d[x] = na << 24 | r << 16 | g << 8 | b;
+                continue;
+            }
             if (k == 255) { d[x] = s[x]; continue; }
             uint32_t q = d[x], n = s[x];
             uint32_t r = (((n >> 16) & 255) * k + ((q >> 16) & 255) * (255 - k)) / 255;

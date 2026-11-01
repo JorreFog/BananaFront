@@ -17,6 +17,7 @@
 #include "frontend.h"
 #include "memmap.h"
 #include "ra.h"
+#include "video.h"
 #include "third_party/rcheevos/include/rc_hash.h"
 #include "third_party/bcomp/bcomp.h"
 #include "third_party/bcomp/bcomp_libretro.h"
@@ -177,8 +178,48 @@ void frontend_mmap_changed(void)
     ra_memory_changed();
 }
 
+// pop-ups (achievements, saves) and the FPS counter on the overlay plane over the game; nothing to show: plane off
+extern int bmenu_overlay(uint32_t* px, int pitch, int w, int h);
+extern int bmenu_overlay_rows(int w, int h);
+extern int bmenu_ov_argb;
+static bool ov_up, show_fps;
+static void overlay_frame(void)
+{
+    if (!bf_video_has_overlay()) return;
+    int W = 0, H = 0;
+    bf_video_size(&W, &H);
+    if (!W) return;
+    if (show_fps) {   // (the counter: frames a second x10, refreshed twice a second)
+        static double t0;
+        static uint64_t f0;
+        const double t = bf_now_ms();
+        if (t - t0 >= 500) {
+            extern void bmenu_fps(int fps_x10, int ff);
+            extern uint64_t bf_frames_run(void);
+            const uint64_t f = bf_frames_run();
+            if (t0 > 0) bmenu_fps((int)((f - f0) * 10000.0 / (t - t0) + 0.5), 0);
+            t0 = t;
+            f0 = f;
+        }
+    }
+    const int rows = bmenu_overlay_rows(W, H);
+    if (!bmenu_overlay(NULL, 0, W, rows)) {
+        if (ov_up) { bf_video_overlay_show(false); ov_up = false; }
+        return;
+    }
+    int pitch = 0, w = 0;
+    uint32_t* px = bf_video_overlay(rows, &pitch, &w);
+    if (!px) return;
+    bmenu_ov_argb = 1;
+    bmenu_overlay(px, pitch / 4, w, rows);
+    bmenu_ov_argb = 0;
+    bf_video_overlay_show(true);
+    ov_up = true;
+}
+
 void frontend_frame(void)
 {
+    overlay_frame();
     comp_frames++;
     if (comp_on) bcomp_service(&comp, comp_frames);
 }
@@ -240,8 +281,13 @@ void frontend_screenshot(void)
 __attribute__((weak)) void bf_menu_open(void) { bf_log("menu: not built in"); }
 void frontend_menu(void) { bf_menu_open(); }
 
-static bool show_fps;
-void frontend_fps_toggle(void) { show_fps = !show_fps; bf_log("fps counter %s", show_fps ? "on" : "off"); }
+void frontend_fps_toggle(void)
+{
+    show_fps = !show_fps;
+    extern void bmenu_fps(int fps_x10, int ff);
+    if (!show_fps) bmenu_fps(-1, 0);
+    bf_log("fps counter %s", show_fps ? "on" : "off");
+}
 
 __attribute__((weak)) void bf_popup(int ev, int arg) { (void)ev; (void)arg; }
 void frontend_event(int ev, int arg)

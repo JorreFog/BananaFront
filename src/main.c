@@ -17,6 +17,8 @@
 //     --resume-save         write it when the game quits
 //     --frames <n>          quit after n frames (benchmarks)
 //     --stats <file>        a line of numbers every 10 s, and a summary at the end
+//     --shader <name>       a GPU shader pass (<name>.frag in DSFLIP_SHADER_DIR: zfast-lcd, zfast-crt, sharp-bilinear...)
+//     --cpugov              BananaFront's own clock governor (cpugov.c) instead of the system's profile
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +35,7 @@
 #include <zlib.h>
 
 #include "audio.h"
+#include "cpugov.h"
 #include "bf.h"
 #include "frontend.h"
 #include "input.h"
@@ -60,7 +63,8 @@ static struct {
     int audio_ms;
     int screen;
     enum bf_scale scale;
-    bool resume_load, resume_save;
+    bool resume_load, resume_save, cpugov;
+    const char* shader;
     long frames;
     const char* stats;
 } A = { .saves = "/data/saves", .states = "/data/states", .shots = "/data/screenshots", .bios = "/data/bios",
@@ -74,6 +78,7 @@ static int slot;
 static uint32_t job_mask;
 static char jobs[16][12];   // RETRO_DEVICE_ID_JOYPAD_* -> job name (PR #151's ra_btn_*)
 static uint64_t frames_run;
+uint64_t bf_frames_run(void) { return frames_run; }
 
 // the core's last picture (its own buffer, valid until the next retro_run): thumbnails and screenshots
 static struct { const void* data; unsigned w, h; size_t pitch; } last;
@@ -115,11 +120,11 @@ static void stats_line(bool final)
     char b[512];
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
-             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu",
+             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
-             as.dropped);
+             as.dropped, bf_cpugov_mhz());
     bf_log("%s", b);
     if (A.stats) {
         FILE* f = fopen(A.stats, "a");
@@ -141,11 +146,26 @@ void bf_video_frame(const void* data, unsigned w, unsigned h, size_t pitch)
     last.data = data; last.w = w; last.h = h; last.pitch = pitch;
     const float aspect = g_core.av.geometry.aspect_ratio > 0 ? g_core.av.geometry.aspect_ratio : 0;
     int dp = 0;
-    const int fmt = g_core.fmt == RETRO_PIXEL_FORMAT_XRGB8888 ? RETRO_PIXEL_FORMAT_XRGB8888 : RETRO_PIXEL_FORMAT_RGB565;
+    const bool x8 = g_core.fmt == RETRO_PIXEL_FORMAT_XRGB8888 || bf_video_wants_xrgb();
+    const int fmt = x8 ? RETRO_PIXEL_FORMAT_XRGB8888 : RETRO_PIXEL_FORMAT_RGB565;
     uint8_t* dst = bf_video_begin(w, h, fmt, aspect, &dp);
     if (!dst) return;
     const uint8_t* src = data;
-    if (g_core.fmt == RETRO_PIXEL_FORMAT_0RGB1555) {
+    if (x8 && g_core.fmt != RETRO_PIXEL_FORMAT_XRGB8888) {
+        // 16-bit core picture into the shader's 32-bit input
+        const bool p565 = g_core.fmt == RETRO_PIXEL_FORMAT_RGB565;
+        for (unsigned y = 0; y < h; y++) {
+            const uint16_t* s = (const uint16_t*)(src + y * pitch);
+            uint32_t* d = (uint32_t*)(dst + (size_t)y * dp);
+            for (unsigned x = 0; x < w; x++) {
+                const unsigned p = s[x];
+                unsigned r, g, b;
+                if (p565) { r = p >> 11; g = (p >> 5) & 63; b = p & 31; g = g << 2 | g >> 4; }
+                else { r = (p >> 10) & 31; g = (p >> 5) & 31; b = p & 31; g = g << 3 | g >> 2; }
+                d[x] = 0xff000000u | (r << 3 | r >> 2) << 16 | g << 8 | (b << 3 | b >> 2);
+            }
+        }
+    } else if (g_core.fmt == RETRO_PIXEL_FORMAT_0RGB1555) {
         for (unsigned y = 0; y < h; y++) {
             const uint16_t* s = (const uint16_t*)(src + y * pitch);
             uint16_t* d = (uint16_t*)(dst + (size_t)y * dp);
@@ -242,6 +262,7 @@ bool bf_state_save(int s)
 {
     size_t n = g_core.serialize_size();
     if (!n) { bf_log("state: the core can't save states"); return false; }
+    bf_cpugov_boost(1000);
     void* d = malloc(n);
     double t = bf_now_ms();
     if (!d || !g_core.serialize(d, n)) { free(d); bf_log("state: the core's save failed"); return false; }
@@ -451,7 +472,7 @@ static bool parse_args(int argc, char** argv)
         { "system", 1, 0, 's' }, { "saves", 1, 0, 'S' }, { "save-dir", 1, 0, 'D' }, { "states", 1, 0, 'T' },
         { "shots", 1, 0, 'P' }, { "bios", 1, 0, 'B' }, { "config", 1, 0, 'C' }, { "screen", 1, 0, 'n' },
         { "scale", 1, 0, 'z' }, { "audio-device", 1, 0, 'a' }, { "audio-latency", 1, 0, 'l' },
-        { "resume-load", 0, 0, 'r' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
+        { "resume-load", 0, 0, 'r' }, { "cpugov", 0, 0, 'g' }, { "shader", 1, 0, 'H' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
         { "help", 0, 0, 'h' }, { 0, 0, 0, 0 } };
     int c;
     while ((c = getopt_long(argc, argv, "", o, NULL)) != -1) {
@@ -468,6 +489,8 @@ static bool parse_args(int argc, char** argv)
         case 'a': A.audio_dev = optarg; break;
         case 'l': A.audio_ms = atoi(optarg); break;
         case 'r': A.resume_load = true; break;
+        case 'g': A.cpugov = true; break;
+        case 'H': A.shader = optarg; break;
         case 'R': A.resume_save = true; break;
         case 'f': A.frames = atol(optarg); break;
         case 'x': A.stats = optarg; break;
@@ -505,6 +528,7 @@ int main(int argc, char** argv)
     const char* top = getenv("BANANA_TOP");
     bf_video_opts vo = { .screen = A.screen, .top_conn = top ? top : "DSI-2", .scale = A.scale };
     if (!bf_video_open(&vo)) { sram_save(true); bf_core_close(); return 1; }
+    if (A.shader && *A.shader) bf_video_shader(A.shader);
     const double refresh = bf_video_refresh();
     // one core frame per refresh when the rates are within 2 % (59.73-60.10 Hz games on a 60.005 Hz panel), the
     // sound scaled to match; else (a 50 Hz game) frames are paced by time and some refreshes repeat one
@@ -513,6 +537,7 @@ int main(int argc, char** argv)
     if (!bf_audio_open(A.audio_dev, A.audio_ms)) bf_log("audio: none, the game runs silent");
     bf_audio_set_rate(g_core.av.timing.sample_rate, fps, refresh, locked);
     bf_input_open(on_button);
+    if (A.cpugov || (getenv("BANANAFRONT_CPUGOV") && atoi(getenv("BANANAFRONT_CPUGOV")))) bf_cpugov_start(g_paths.game, refresh);
     load_jobs();
     frontend_init(A.system, A.rom);
 
@@ -586,7 +611,10 @@ int main(int argc, char** argv)
         frames_run += nrun;
         S.frames += nrun;
         if (S.n < NSAMP && nrun) S.run_ms[S.n++] = (t1 - t0) / nrun;
-        if (t1 - bf_video_last_flip_ms() > 1000.0 / refresh) S.late++;
+        const bool late = t1 - bf_video_last_flip_ms() > 1000.0 / refresh;
+        if (late) S.late++;
+        if (!ff) bf_cpugov_frame(t1 - t0, late);
+        bf_cpugov_tick();
         frontend_frame();
         if (g_core.av_changed) {
             g_core.av_changed = false;
@@ -605,6 +633,7 @@ int main(int argc, char** argv)
     if ((A.resume_save && !quit_nosave) || sig_state) bf_state_save(-1);
     sram_save(true);
     frontend_quit();
+    bf_cpugov_stop();
     bf_input_close();
     bf_audio_close();
     bf_video_close();

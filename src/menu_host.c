@@ -120,7 +120,7 @@ static void quit(void* ctx) { (void)ctx; bf_quit(false); }
 static void quit_nosave(void* ctx) { (void)ctx; bf_quit(true); }
 static void restart(void* ctx) { (void)ctx; g_core.reset(); ra_reset(); }
 static void mlog(void* ctx, const char* line) { (void)ctx; bf_log("%s", line); }
-__attribute__((weak)) void bf_cpugov_boost(int ms) { (void)ms; }
+#include "cpugov.h"
 static void boost(void* ctx, int ms) { (void)ctx; bf_cpugov_boost(ms); }
 
 static int hotkey(void* ctx, int i, const char** keys, const char** what)
