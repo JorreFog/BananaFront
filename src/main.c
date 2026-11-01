@@ -504,6 +504,7 @@ static void job(const char* j)
     else if (!strcmp(j, "screenshot")) frontend_screenshot();
 }
 
+static bool hotkeys_on;
 // (called from input reading, between frames)
 static void on_button(int id, bool down, bool f)
 {
@@ -515,7 +516,9 @@ static void on_button(int id, bool down, bool f)
         if (id >= 0 && id < 16 && jobs[id][0]) job(jobs[id]);
         return;
     }
-    // F + a button: RetroArch's hotkeys on this pad (retrogame_joypad.cfg), so hands already know them
+    // F + a button: RetroArch's hotkeys on this pad (retrogame_joypad.cfg), so hands already know them; with
+    // Settings > Other systems > RetroArch hotkeys off (ra_hotkeys), only the two needed to get out: F + X and F + START
+    if (!hotkeys_on && id != RETRO_DEVICE_ID_JOYPAD_START && id != RETRO_DEVICE_ID_JOYPAD_X && id != BF_HK_ALONE) return;
     switch (id) {
     case RETRO_DEVICE_ID_JOYPAD_START: quit = true; break;
     case RETRO_DEVICE_ID_JOYPAD_R: bf_state_save(slot); break;
@@ -533,6 +536,9 @@ static void on_button(int id, bool down, bool f)
 
 static void load_jobs(void)
 {
+    hotkeys_on = true;
+    char hk[16] = "";
+    if (bf_conf_file_get("/data/banana/settings.conf", "ra_hotkeys", hk, sizeof hk) && !strcmp(hk, "off")) hotkeys_on = false;
     // Settings > Other systems > Buttons (PR #151): L2, R2, L3, R3 alone. Defaults: R2 fast-forward, the rest the game's
     static const struct { const char* key; int id; const char* def; } B[] = {
         { "ra_btn_l2", RETRO_DEVICE_ID_JOYPAD_L2, "game" }, { "ra_btn_r2", RETRO_DEVICE_ID_JOYPAD_R2, "ff" },
