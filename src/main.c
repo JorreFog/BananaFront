@@ -101,6 +101,7 @@ static struct {
     uint64_t flip_n;
     double lat_sum;
     uint64_t lat_n;
+    uint64_t missed;  // (low latency: refreshes a commit missed)
     double copy_ms, commit_ms;  // (the parts of fe_ms: the picture's copy, and frontend_frame + the commit)
     double fe_ms;  // BananaFront's own time (the picture's copy, the sound, the commit, the overlay's wake-up)
 } S;
@@ -687,7 +688,9 @@ int main(int argc, char** argv)
         // low latency (--lowlat): the frame starts as late as it can and still make the next refresh, so the
         // buttons it reads are that much fresher (RetroArch's frame delay, set by itself from the frames' times)
         int timeout = can_run ? 0 : (paused ? 50 : 100);
-        if (can_run && A.lowlat && !ff) {
+        // (with a shader the GPU's pass sits between the frame and the flip, unseen by the frame's own time: off)
+        const bool ll = A.lowlat && !ff && !bf_video_shader_name()[0];
+        if (can_run && ll) {
             const double wake = bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget;
             const double now = bf_now_ms();
             if (wake > now + 0.5) timeout = (int)(wake - now);
@@ -699,6 +702,13 @@ int main(int argc, char** argv)
                 bf_video_events();
                 const double t = bf_video_last_flip_ms();
                 if (S.flip_prev > 0 && t - S.flip_prev < 100) { S.flip_sum += t - S.flip_prev; S.flip_n++; }
+                // low latency: a flip that came a refresh late (the commit missed its vblank: a slow frame, the
+                // GPU's shader pass) widens the budget at once, whatever the frame's own time said
+                if (A.lowlat && !ff && S.flip_prev > 0 && t - S.flip_prev > 1500.0 / refresh && t - S.flip_prev < 100) {
+                    ll_budget += 2.0;
+                    if (ll_budget > 1000.0 / refresh - 1.0) ll_budget = 1000.0 / refresh - 1.0;
+                    S.missed++;
+                }
                 S.flip_prev = t;
                 S.vblanks++;
                 want_frame = true;
@@ -710,7 +720,7 @@ int main(int argc, char** argv)
         if (bf_menu_run_pending()) want_frame = true;  // (the menu took the flip events while it was open)
         if (paused) { frontend_paused(); continue; }
         if (bf_video_flip_pending() || !want_frame) continue;
-        if (A.lowlat && !ff && bf_now_ms() < bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget - 0.5) continue;
+        if (ll && bf_now_ms() < bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget - 0.5) continue;
         const double input_at = bf_now_ms();
 
         // the frame(s) for this refresh
