@@ -25,8 +25,11 @@ static int ext_ok(const char* name, const char* exts)
     return 0;
 }
 
+int bf_unzip_method;  // the last bf_unzip_first's: the matching member's method when it wasn't stored/deflate, else -1
+
 void* bf_unzip_first(const char* zip, const char* exts, char* name, size_t name_n, size_t* size)
 {
+    bf_unzip_method = -1;
     size_t n = 0;
     uint8_t* z = bf_read_file(zip, &n);
     if (!z || n < 22) { free(z); return NULL; }
@@ -62,7 +65,7 @@ void* bf_unzip_first(const char* zip, const char* exts, char* name, size_t name_
                 break;
             }
             inflateEnd(&s);
-        } else { free(o); break; }
+        } else { bf_unzip_method = method; free(o); break; }  // (bzip2 12, LZMA 14, Deflate64 9...: 7zz's job)
         snprintf(name, name_n, "%s", nm);
         *size = usize;
         out = o;

@@ -359,12 +359,24 @@ bool bf_core_load_game(const char* rom)
     snprintf(g_core.rom_path, sizeof g_core.rom_path, "%s", rom);
     const char* exts = g_core.sys.valid_extensions;
     const bool zip = strlen(rom) > 4 && !strcasecmp(rom + strlen(rom) - 4, ".zip");
+    const bool sz7 = strlen(rom) > 3 && !strcasecmp(rom + strlen(rom) - 3, ".7z");
+    static char unpacked[1100];
+    void* d = NULL;
+    char member[512];
+    size_t n = 0;
     if (zip && !ext_in(rom, exts)) {
+        d = bf_unzip_first(rom, exts, member, sizeof member, &n);
+        if (!d && bf_unzip_method >= 0) {
+            bf_log("archive: %s's member is compressed with zip method %d (not stored/deflate): 7zz unpacks it", rom, bf_unzip_method);
+            if (!bf_7z_extract(rom, exts, unpacked, sizeof unpacked)) return false;
+            snprintf(g_core.rom_path, sizeof g_core.rom_path, "%s", unpacked);
+        } else if (!d) { bf_log("no %s file in %s", exts ? exts : "", rom); return false; }
+    } else if (sz7 && !ext_in(rom, exts)) {
+        if (!bf_7z_extract(rom, exts, unpacked, sizeof unpacked)) return false;
+        snprintf(g_core.rom_path, sizeof g_core.rom_path, "%s", unpacked);
+    }
+    if (d) {
         // the first member with an extension the core takes, as RetroArch picks it
-        char member[512];
-        size_t n = 0;
-        void* d = bf_unzip_first(rom, exts, member, sizeof member, &n);
-        if (!d) { bf_log("no %s file in %s", exts ? exts : "", rom); return false; }
         bf_log("content: %s from the zip (%zu bytes)", member, n);
         if (g_core.sys.need_fullpath) {
             // (RetroArch's cache_directory is /tmp too)
@@ -385,8 +397,8 @@ bool bf_core_load_game(const char* rom)
             snprintf(g_core.rom_path, sizeof g_core.rom_path, "%s/%s", dir, slash ? slash + 1 : member);
         }
     } else if (!g_core.sys.need_fullpath) {
-        g_core.rom_data = bf_read_file(rom, &g_core.rom_size);
-        if (!g_core.rom_data) { bf_log("can't read %s", rom); return false; }
+        g_core.rom_data = bf_read_file(g_core.rom_path, &g_core.rom_size);
+        if (!g_core.rom_data) { bf_log("can't read %s", g_core.rom_path); return false; }
     }
     gi.path = g_core.rom_path;
     gi.data = g_core.rom_data;
@@ -409,6 +421,7 @@ void bf_core_close(void)
     free(g_core.rom_data);
     free(g_core.mmap);
     if (tmp_rom[0]) unlink(tmp_rom);
+    bf_archive_cleanup();
 }
 
 double bf_core_fps(void) { return g_core.av.timing.fps > 1 ? g_core.av.timing.fps : 60.0; }
