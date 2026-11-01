@@ -103,3 +103,4 @@ bool bf_video_wants_xrgb(void) { return false; }
 uint32_t* bf_video_overlay(int rows, int* pitch, int* w) { (void)rows; (void)pitch; (void)w; return NULL; }
 void bf_video_overlay_show(bool on) { (void)on; }
 bool bf_video_has_overlay(void) { return false; }
+void bf_video_fixed_rect(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; }

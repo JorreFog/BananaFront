@@ -37,4 +37,5 @@ bool bf_video_wants_xrgb(void);          // the game's buffers are XRGB8888 what
 uint32_t* bf_video_overlay(int rows, int* pitch, int* w);
 void bf_video_overlay_show(bool on);
 bool bf_video_has_overlay(void);
+void bf_video_fixed_rect(int x, int y, int w, int h);  // the picture exactly there (the screen border's hole)
 void bf_video_close(void);

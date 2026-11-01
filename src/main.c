@@ -19,6 +19,7 @@
 //     --stats <file>        a line of numbers every 10 s, and a summary at the end
 //     --shader <name>       a GPU shader pass (<name>.frag in DSFLIP_SHADER_DIR: zfast-lcd, zfast-crt, sharp-bilinear...)
 //     --lowlat              each frame started as late as it can be (fresher input): the frame delay found by itself
+//     --border <png> --border-rect x,y,w,h   the screen border (panel-sized PNG with a hole) and the picture's place
 //     --cpugov              BananaFront's own clock governor (cpugov.c) instead of the system's profile
 #define _GNU_SOURCE
 #include <errno.h>
@@ -66,6 +67,8 @@ static struct {
     enum bf_scale scale;
     bool resume_load, resume_save, cpugov, lowlat;
     const char* shader;
+    const char* border;
+    int brect[4];
     long frames;
     const char* stats;
 } A = { .saves = "/data/saves", .states = "/data/states", .shots = "/data/screenshots", .bios = "/data/bios",
@@ -503,7 +506,7 @@ static bool parse_args(int argc, char** argv)
         { "system", 1, 0, 's' }, { "saves", 1, 0, 'S' }, { "save-dir", 1, 0, 'D' }, { "states", 1, 0, 'T' },
         { "shots", 1, 0, 'P' }, { "bios", 1, 0, 'B' }, { "config", 1, 0, 'C' }, { "screen", 1, 0, 'n' },
         { "scale", 1, 0, 'z' }, { "audio-device", 1, 0, 'a' }, { "audio-latency", 1, 0, 'l' },
-        { "resume-load", 0, 0, 'r' }, { "cpugov", 0, 0, 'g' }, { "lowlat", 0, 0, 'L' }, { "shader", 1, 0, 'H' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
+        { "resume-load", 0, 0, 'r' }, { "cpugov", 0, 0, 'g' }, { "lowlat", 0, 0, 'L' }, { "shader", 1, 0, 'H' }, { "border", 1, 0, 'O' }, { "border-rect", 1, 0, 'Q' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
         { "help", 0, 0, 'h' }, { 0, 0, 0, 0 } };
     int c;
     while ((c = getopt_long(argc, argv, "", o, NULL)) != -1) {
@@ -523,6 +526,8 @@ static bool parse_args(int argc, char** argv)
         case 'g': A.cpugov = true; break;
         case 'L': A.lowlat = true; break;
         case 'H': A.shader = optarg; break;
+        case 'O': A.border = optarg; break;
+        case 'Q': sscanf(optarg, "%d,%d,%d,%d", &A.brect[0], &A.brect[1], &A.brect[2], &A.brect[3]); break;
         case 'R': A.resume_save = true; break;
         case 'f': A.frames = atol(optarg); break;
         case 'x': A.stats = optarg; break;
@@ -573,6 +578,7 @@ int main(int argc, char** argv)
     if (A.cpugov || (getenv("BANANAFRONT_CPUGOV") && atoi(getenv("BANANAFRONT_CPUGOV")))) bf_cpugov_start(g_paths.game, refresh);
     load_jobs();
     frontend_init(A.system, A.rom);
+    if (A.border && A.brect[2] > 0) frontend_border(A.border, A.brect[0], A.brect[1], A.brect[2], A.brect[3]);
 
     // the command pipe: stdin when it's a pipe/FIFO (run-bananafront: < $BANANA_RA_CMD)
     if (isatty(0) == 0) {

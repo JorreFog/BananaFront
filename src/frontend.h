@@ -15,7 +15,9 @@ void frontend_frame(void);       // after each refresh's core frames (the consis
 void frontend_core_frame(void);  // after each retro_run (RetroAchievements evaluate every emulated frame)
 void frontend_paused(void);      // while paused or in the menu, a few times a second
 void frontend_mmap_changed(void);
-void frontend_quit(void);        // before the core is closed
+void frontend_quit(void);
+void frontend_border(const char* png, int x, int y, int w, int h);
+void frontend_menu_closed(void);        // before the core is closed
 void frontend_menu(void);        // F + X, MENU_TOGGLE
 void frontend_screenshot(void);  // F + SELECT, SCREENSHOT
 void frontend_fps_toggle(void);  // F + Y

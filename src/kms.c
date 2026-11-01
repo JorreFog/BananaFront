@@ -132,9 +132,13 @@ static bool mkbuf(buf_t* b, uint32_t w, uint32_t h, uint32_t fmt)
     return true;
 }
 
+static int fixed[4];  // the screen border's hole: the picture goes exactly there
+void bf_video_fixed_rect(int x, int y, int w, int h) { fixed[0] = x; fixed[1] = y; fixed[2] = w; fixed[3] = h; }
+
 // where the picture goes on the panel
 static void dest_rect(unsigned sw, unsigned sh, int* x, int* y, int* w, int* h)
 {
+    if (fixed[2] > 0 && fixed[3] > 0) { *x = fixed[0]; *y = fixed[1]; *w = fixed[2]; *h = fixed[3]; return; }
     const int W = K.mode.hdisplay, H = K.mode.vdisplay;
     const double a = K.aspect > 0 ? K.aspect : (double)sw / sh;
     if (K.scale == BF_SCALE_STRETCH) { *x = *y = 0; *w = W; *h = H; return; }

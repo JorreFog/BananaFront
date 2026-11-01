@@ -199,12 +199,54 @@ extern int bmenu_overlay(uint32_t* px, int pitch, int w, int h);
 extern int bmenu_overlay_rows(int w, int h);
 extern int bmenu_ov_argb;
 static bool ov_up, show_fps;
+// the screen border (Settings > Other systems > Screen border): its PNG on the overlay plane over the whole panel,
+// the picture in its hole; pop-ups drawn over it while they show
+static uint32_t* border;
+static int border_w, border_h;
+static bool border_shown;
+extern uint32_t* bf_png_argb(const char* path, int* w, int* h);
+void frontend_border(const char* png, int x, int y, int w, int h)
+{
+    int W = 0, H = 0;
+    bf_video_size(&W, &H);
+    if (!bf_video_has_overlay()) { bf_log("border: no overlay plane, none drawn"); return; }
+    border = bf_png_argb(png, &border_w, &border_h);
+    if (!border || border_w != W || border_h != H) {
+        bf_log("border: %s %s", png, border ? "isn't the panel's size" : "can't be read");
+        free(border);
+        border = NULL;
+        return;
+    }
+    bf_video_fixed_rect(x, y, w, h);
+    bf_log("border: %s, the picture at %d,%d %dx%d", png, x, y, w, h);
+}
+
+void frontend_menu_closed(void) { border_shown = false; }  // (the menu took the panel: the border goes up again)
+
 static void overlay_frame(void)
 {
     if (!bf_video_has_overlay()) return;
     int W = 0, H = 0;
     bf_video_size(&W, &H);
     if (!W) return;
+    if (border) {
+        const int strip = bmenu_overlay_rows(W, H);
+        const bool pop = bmenu_overlay(NULL, 0, W, strip) != 0;
+        if (!pop && border_shown) return;  // (the same picture stays up)
+        int pitch = 0, w = 0;
+        uint32_t* px = bf_video_overlay(H, &pitch, &w);
+        if (!px) return;
+        for (int y = 0; y < H; y++) memcpy((uint8_t*)px + (size_t)y * pitch, border + (size_t)y * W, (size_t)W * 4);
+        if (pop) {
+            bmenu_ov_argb = 1;
+            bmenu_overlay(px, pitch / 4, w, strip);
+            bmenu_ov_argb = 0;
+        }
+        bf_video_overlay_show(true);
+        border_shown = !pop;
+        ov_up = true;
+        return;
+    }
     if (show_fps) {   // (the counter: frames a second x10, refreshed twice a second)
         static double t0;
         static uint64_t f0;

@@ -1516,6 +1516,19 @@ static void ov_osd(long long t) {
     fclose(f);
 }
 /* blended over the frame, slid up by off rows */
+/* BananaFront: a PNG as premultiplied ARGB8888 (the screen border), malloc'd; NULL on error */
+uint32_t *bf_png_argb(const char *path, int *w, int *h) {
+    int ch = 0;
+    unsigned char *img = stbi_load(path, w, h, &ch, 4);
+    if (!img) return 0;
+    uint32_t *o = malloc((size_t)*w * *h * 4);
+    for (size_t i = 0; o && i < (size_t)*w * *h; i++) {
+        unsigned r = img[i * 4], g = img[i * 4 + 1], b = img[i * 4 + 2], a = img[i * 4 + 3];
+        o[i] = a << 24 | (r * a / 255) << 16 | (g * a / 255) << 8 | (b * a / 255);
+    }
+    stbi_image_free(img);
+    return o;
+}
 int bmenu_ov_argb;   /* BananaFront: drawing into a transparent ARGB8888 overlay plane (premultiplied), not over a picture */
 static void ov_blit(const ovpic *o, uint32_t *px, int pitch, int fh, int off) {
     for (int y = 0; y < o->h; y++) {

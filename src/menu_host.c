@@ -214,6 +214,7 @@ bool bf_menu_run_pending(void)
     bf_audio_pause(false);
     bf_input_raw(false);
     bf_video_canvas_done();
+    frontend_menu_closed();
     menu_open = false;
     if (!ok) bf_log("menu: couldn't open (fonts or panel buffers missing)");
     return true;
