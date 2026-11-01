@@ -280,9 +280,9 @@ static void sram_load(void)
             free(d);
             bf_log("save: %s (%zu of %zu bytes)", p, n < sz ? n : sz, sz);
         }
-        s->size = sz;
         s->last = malloc(sz);
-        memcpy(s->last, mem, sz);
+        s->size = s->last ? sz : 0;  // (out of memory: this save is left as it is on the card)
+        if (s->last) memcpy(s->last, mem, sz);
     }
 }
 

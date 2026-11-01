@@ -47,7 +47,9 @@ static opt_t* opt_add(const char* key)
 {
     opt_t* o = opt_find(key);
     if (o) return o;
-    opts = realloc(opts, sizeof *opts * (nopts + 1));
+    opt_t* grown = realloc(opts, sizeof *opts * (nopts + 1));
+    if (!grown) abort();  // (a few hundred bytes: out of memory here means nothing else would work either)
+    opts = grown;
     o = &opts[nopts++];
     memset(o, 0, sizeof *o);
     o->key = strdup(key);
