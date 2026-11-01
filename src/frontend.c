@@ -384,6 +384,23 @@ void frontend_screenshot(void)
     frontend_event(BF_EV_SHOT, ok);
 }
 
+// GRAB_PANEL: the game plane's picture as shown (after the shader), for checking shaders on the handheld
+void frontend_panel_grab(void)
+{
+    int w = 0, h = 0;
+    uint32_t* px = bf_video_grab(&w, &h);
+    if (!px) { bf_log("panel grab: nothing shown"); return; }
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char p[1700];
+    snprintf(p, sizeof p, "%s/%s-panel-%02d%02d%02d.png", g_paths.shot_dir, g_paths.game, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    bf_mkdirs(g_paths.shot_dir);
+    const bool ok = write_png(p, px, (unsigned)w, (unsigned)h);
+    free(px);
+    bf_log("panel grab %s: %s (%dx%d)", ok ? "saved" : "NOT saved", p, w, h);
+}
+
 __attribute__((weak)) void bf_menu_open(void) { bf_log("menu: not built in"); }
 void frontend_menu(void) { bf_menu_open(); }
 

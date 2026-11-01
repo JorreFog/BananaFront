@@ -471,6 +471,7 @@ void bf_command(const char* line)
     else if (!strcmp(w, "PAUSE_TOGGLE")) paused = !paused;
     else if (!strcmp(w, "MENU_TOGGLE")) frontend_menu();
     else if (!strcmp(w, "SCREENSHOT")) frontend_screenshot();
+    else if (!strcmp(w, "GRAB_PANEL")) frontend_panel_grab();
     else if (!strcmp(w, "RESET")) { g_core.reset(); ra_reset(); }
     else if (!strcmp(w, "READ_CORE_MEMORY")) read_memory(arg);
     else if (!strcmp(w, "AUDIO_REINIT")) { bf_audio_close(); bf_audio_open(A.audio_dev, A.audio_ms); }

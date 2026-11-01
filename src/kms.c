@@ -541,7 +541,31 @@ int bf_video_size(int* w, int* h)
     return 0;
 }
 
-uint32_t* bf_video_grab(int* w, int* h) { (void)w; (void)h; return NULL; }
+// what the game's plane shows now, as XRGB8888 (malloc'd): the shader's panel-sized output when a shader runs, else
+// the game's buffer (core-sized: the plane scales it). For checking a shader on the panel (GRAB_PANEL); never per frame.
+uint32_t* bf_video_grab(int* w, int* h)
+{
+    const buf_t* b = NULL;
+    if (K.shader && K.out_shown >= 0) b = &K.out[K.out_shown];
+    else if (K.hw && K.shown >= 0) b = &K.b[K.shown];
+    if (!b || !b->map || !b->w || !b->h) return NULL;
+    uint32_t* px = malloc((size_t)b->w * b->h * 4);
+    if (!px) return NULL;
+    for (uint32_t y = 0; y < b->h; y++) {
+        const uint8_t* row = (const uint8_t*)b->map + (size_t)y * b->pitch;
+        uint32_t* d = px + (size_t)y * b->w;
+        if (b->fmt == DRM_FORMAT_RGB565)
+            for (uint32_t x = 0; x < b->w; x++) {
+                const unsigned p = ((const uint16_t*)row)[x], r = p >> 11, g = (p >> 5) & 63, bl = p & 31;
+                d[x] = 0xff000000u | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (bl << 3 | bl >> 2);
+            }
+        else
+            for (uint32_t x = 0; x < b->w; x++) d[x] = 0xff000000u | ((const uint32_t*)row)[x];
+    }
+    *w = (int)b->w;
+    *h = (int)b->h;
+    return px;
+}
 
 // ---- the overlay plane: pop-ups and the FPS counter over the game (ARGB8888, premultiplied), the panel's width, the
 // top rows only; in the game's own commit, so it costs nothing while hidden (the plane off)

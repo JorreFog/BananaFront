@@ -20,7 +20,8 @@ void frontend_border(const char* png, int x, int y, int w, int h);
 void frontend_menu_closed(void);
 void frontend_overlay_pause(bool p);        // before the core is closed
 void frontend_menu(void);        // F + X, MENU_TOGGLE
-void frontend_screenshot(void);  // F + SELECT, SCREENSHOT
+void frontend_screenshot(void);
+void frontend_panel_grab(void);  // GRAB_PANEL: the game plane as shown (after the shader)  // F + SELECT, SCREENSHOT
 void frontend_fps_toggle(void);  // F + Y
 void frontend_event(int ev, int arg);  // a state saved/loaded, the slot changed... (a pop-up, a log line)
 
