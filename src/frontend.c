@@ -279,27 +279,32 @@ static void overlay_frame(void)
 // the panel's width) took tens of ms, and on the main thread that was frames and sound lost (the Plus, at a game's
 // start with RetroAchievements: 37 fps and 115 underruns in the first 10 s)
 static pthread_t ov_thr;
-static pthread_mutex_t ov_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ov_mu = PTHREAD_MUTEX_INITIALIZER;       // the wake-up flags only (held for nanoseconds)
+static pthread_mutex_t compose_mu = PTHREAD_MUTEX_INITIALIZER;  // held while drawing (the menu waits on it, main never)
 static pthread_cond_t ov_cv = PTHREAD_COND_INITIALIZER;
 static bool ov_tick, ov_stop, ov_paused, ov_started;
 static void* overlay_thread(void* a)
 {
     (void)a;
-    pthread_mutex_lock(&ov_mu);
-    while (!ov_stop) {
+    for (;;) {
+        pthread_mutex_lock(&ov_mu);
         while (!ov_tick && !ov_stop) pthread_cond_wait(&ov_cv, &ov_mu);
+        const bool stop = ov_stop;
         ov_tick = false;
-        if (!ov_stop && !ov_paused) overlay_frame();  // (under the lock: the menu waits for it)
+        pthread_mutex_unlock(&ov_mu);
+        if (stop) break;
+        pthread_mutex_lock(&compose_mu);
+        if (!ov_paused) overlay_frame();
+        pthread_mutex_unlock(&compose_mu);
     }
-    pthread_mutex_unlock(&ov_mu);
     return NULL;
 }
-// the menu draws with the same fonts: the overlay stops while it is open
+// the menu draws with the same fonts: the overlay stops while it is open (waiting for a picture being drawn)
 void frontend_overlay_pause(bool p)
 {
-    pthread_mutex_lock(&ov_mu);
+    pthread_mutex_lock(&compose_mu);
     ov_paused = p;
-    pthread_mutex_unlock(&ov_mu);
+    pthread_mutex_unlock(&compose_mu);
 }
 
 void frontend_frame(void)
