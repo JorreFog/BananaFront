@@ -117,9 +117,19 @@ enum { CURLOPT_WRITEDATA = 10001, CURLOPT_URL = 10002, CURLOPT_POSTFIELDS = 1001
        CURLOPT_HTTPHEADER = 10023, CURLOPT_WRITEFUNCTION = 20011, CURLOPT_TIMEOUT = 13, CURLOPT_NOSIGNAL = 99,
        CURLOPT_FOLLOWLOCATION = 52, CURLINFO_RESPONSE_CODE = 0x200002 };
 
+static pthread_mutex_t curl_mu = PTHREAD_MUTEX_INITIALIZER;
+static int curl_load_(void);
+// (on the request's own thread: libcurl + OpenSSL take ~0.3 s to load on the Plus, which held up the game's start)
 static int curl_load(void)
 {
-    if (curl_lib) return 1;
+    pthread_mutex_lock(&curl_mu);
+    int ok = curl_load_();
+    pthread_mutex_unlock(&curl_mu);
+    return ok;
+}
+static int curl_load_(void)
+{
+    if (curl_lib) return c_init != NULL;
     curl_lib = dlopen("libcurl.so.4", RTLD_NOW | RTLD_LOCAL);
     if (!curl_lib) return 0;
     c_init = (void* (*)(void))dlsym(curl_lib, "curl_easy_init");
@@ -175,7 +185,8 @@ static void* http_thread(void* a)
     http_req* r = a;
     membuf body = { 0, 0 };
     long status = 0;
-    void* h = c_init();
+    const int have_curl = curl_load();
+    void* h = have_curl ? c_init() : NULL;
     void* hdrs = 0;
     if (h) {
         c_setopt(h, CURLOPT_URL, r->url);
@@ -220,7 +231,8 @@ static void* http_thread(void* a)
     rc_api_server_response_t resp;
     resp.body = body.data ? body.data : "";
     resp.body_length = body.len;
-    resp.http_status_code = status ? (int)status : RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR;
+    resp.http_status_code = status ? (int)status : have_curl ? RC_API_SERVER_RESPONSE_RETRYABLE_CLIENT_ERROR
+                                                              : RC_API_SERVER_RESPONSE_CLIENT_ERROR;
     r->cb(&resp, r->cbdata);
     free(body.data);
     free(r->url);
@@ -244,11 +256,6 @@ static void detach(void* (*fn)(void*), void* arg, const char* name)
 static void server_call(const rc_api_request_t* req, rc_client_server_callback_t cb, void* cbdata, rc_client_t* c)
 {
     (void)c;
-    if (!curl_load()) {
-        rc_api_server_response_t resp = { "", 0, RC_API_SERVER_RESPONSE_CLIENT_ERROR };
-        cb(&resp, cbdata);
-        return;
-    }
     http_req* r = calloc(1, sizeof *r);
     r->url = strdup(req->url);
     r->post = req->post_data ? strdup(req->post_data) : 0;
