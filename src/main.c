@@ -102,6 +102,7 @@ static struct {
     double lat_sum;
     uint64_t lat_n;
     uint64_t missed;  // (low latency: refreshes a commit missed)
+    uint64_t caught;  // frames run to catch up after a slow refresh
     double copy_ms, commit_ms;  // (the parts of fe_ms: the picture's copy, and frontend_frame + the commit)
     double fe_ms;  // BananaFront's own time (the picture's copy, the sound, the commit, the overlay's wake-up)
 } S;
@@ -132,12 +133,12 @@ static void stats_line(bool final)
     char b[512];
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
-             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms missed %llu frontend %.3f ms/frame "
+             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms missed %llu caught-up %llu frontend %.3f ms/frame "
              "(copy %.3f audio %.3f commit %.3f)",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
-             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, (unsigned long long)S.missed, S.frames ? (S.fe_ms + aud) / S.frames : 0,
+             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, (unsigned long long)S.missed, (unsigned long long)S.caught, S.frames ? (S.fe_ms + aud) / S.frames : 0,
              S.frames ? S.copy_ms / S.frames : 0, S.frames ? aud / S.frames : 0, S.frames ? S.commit_ms / S.frames : 0);
     bf_log("%s", b);
     if (A.stats) {
@@ -152,6 +153,7 @@ static void stats_line(bool final)
     S.lat_n = 0;
     S.fe_ms = S.copy_ms = S.commit_ms = 0;
     S.missed = 0;
+    S.caught = 0;
     S.t0 = now;
     S.cpu0 = cpu_ms();
 }
@@ -673,6 +675,8 @@ int main(int argc, char** argv)
     double next_stats = S.t0 + 10000, next_sram = S.t0 + 10000;
     double acc = 0;  // time-paced: frames owed
     double ll_budget = 1000.0 / refresh;  // --lowlat: how long before the next refresh a frame starts
+    int owed = 0;  // frames a slow refresh left behind, run in the next one
+    double last_frame_ms = 1000.0 / refresh;  // a core frame's time, smoothed
     bool want_frame = true;
     while (!quit && !sig_quit) {
         // wait: for the flip (the next refresh), input, commands
@@ -690,7 +694,7 @@ int main(int argc, char** argv)
         // buttons it reads are that much fresher (RetroArch's frame delay, set by itself from the frames' times)
         int timeout = can_run ? 0 : (paused ? 50 : 100);
         // (with a shader the GPU's pass sits between the frame and the flip, unseen by the frame's own time: off)
-        const bool ll = A.lowlat && !ff && !bf_video_shader_name()[0];
+        const bool ll = A.lowlat && !ff && !bf_video_shader_name()[0] && !owed;
         if (can_run && ll) {
             const double wake = bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget;
             const double now = bf_now_ms();
@@ -703,6 +707,14 @@ int main(int argc, char** argv)
                 bf_video_events();
                 const double t = bf_video_last_flip_ms();
                 if (S.flip_prev > 0 && t - S.flip_prev < 100) { S.flip_sum += t - S.flip_prev; S.flip_n++; }
+                // a refresh (or two) went by with no new frame (a slow frame): those frames are owed and run in the
+                // next refresh, only the last shown, so the game keeps its speed and the sound its flow (with one
+                // frame a refresh and nothing owed, each late frame was a gap in the sound: underruns)
+                if (locked && S.flip_prev > 0 && t - S.flip_prev > 1500.0 / refresh && t - S.flip_prev < 100) {
+                    int gap = (int)((t - S.flip_prev) * refresh / 1000.0 + 0.5) - 1;
+                    owed += gap;
+                    if (owed > 2) owed = 2;
+                }
                 // low latency: a flip that came a refresh late (the commit missed its vblank: a slow frame, the
                 // GPU's shader pass) widens the budget at once, whatever the frame's own time said
                 if (A.lowlat && !ff && S.flip_prev > 0 && t - S.flip_prev > 1500.0 / refresh && t - S.flip_prev < 100) {
@@ -725,7 +737,11 @@ int main(int argc, char** argv)
         const double input_at = bf_now_ms();
 
         // the frame(s) for this refresh
-        int nrun = 1;
+        // (only as many as fit in a refresh at the last frames' pace: catching up must never make the next one late)
+        while (owed > 0 && last_frame_ms * (1 + owed) > 900.0 / refresh) owed--;
+        int nrun = 1 + (ff ? 0 : owed);
+        S.caught += owed;
+        owed = 0;
         if (!locked) {
             acc += fps / refresh;
             nrun = (int)acc;
@@ -747,6 +763,7 @@ int main(int argc, char** argv)
         frames_run += nrun;
         S.frames += nrun;
         if (S.n < NSAMP && nrun) S.run_ms[S.n++] = (t1 - t0) / nrun;
+        if (nrun && !ff) last_frame_ms += ((t1 - t0) / nrun - last_frame_ms) * 0.1;  // (smoothed: one spike decides nothing)
         const bool late = t1 - bf_video_last_flip_ms() > 1000.0 / refresh;
         if (late) S.late++;
         // the input's age when the picture starts to show: from the read to the next refresh
