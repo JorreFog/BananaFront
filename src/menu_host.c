@@ -109,12 +109,14 @@ static int battery(void* ctx, int* charging)
     return pct;
 }
 
-static int save(void* ctx, int slot) { (void)ctx; return bf_state_save(slot == BM_UNDO_SLOT ? -2 : slot) ? 0 : -1; }
-static int load(void* ctx, int slot) { (void)ctx; return bf_state_load(slot == BM_UNDO_SLOT ? -2 : slot) ? 0 : -1; }
+// the menu's slots 1-8 are RetroArch's slots 0-7 (slot 1 = RetroArch's first, ".state": what F + R saves, in both)
+static int ra_slot(int menu_slot) { return menu_slot == BM_UNDO_SLOT ? -2 : menu_slot - 1; }
+static int save(void* ctx, int slot) { (void)ctx; return bf_state_save(ra_slot(slot)) ? 0 : -1; }
+static int load(void* ctx, int slot) { (void)ctx; return bf_state_load(ra_slot(slot)) ? 0 : -1; }
 static void state_file(void* ctx, int slot, char* out, int n)
 {
     (void)ctx;
-    bf_path_state(&g_paths, slot == BM_UNDO_SLOT ? -2 : slot, out, (size_t)n);
+    bf_path_state(&g_paths, ra_slot(slot), out, (size_t)n);
 }
 static void quit(void* ctx) { (void)ctx; bf_quit(false); }
 static void quit_nosave(void* ctx) { (void)ctx; bf_quit(true); }
@@ -123,12 +125,14 @@ static void mlog(void* ctx, const char* line) { (void)ctx; bf_log("%s", line); }
 #include "cpugov.h"
 static void boost(void* ctx, int ms) { (void)ctx; bf_cpugov_boost(ms); }
 
+// the Hotkeys page, in BananaDS's words (the same lines, already translated); slot 1 is RetroArch's first slot
 static int hotkey(void* ctx, int i, const char** keys, const char** what)
 {
     (void)ctx;
-    static const char* K[][2] = { { "F + START", "Quit the game" }, { "F + X", "Menu" }, { "F + R", "Save state" },
-                                  { "F + L", "Load state" }, { "F + R2", "Fast-forward" }, { "F + SELECT", "Screenshot" },
-                                  { "F + Y", "Frames per second" }, { "F + UP / DOWN", "State slot" } };
+    static const char* K[][2] = { { "F / F + X", "This menu" }, { "F + R", "Save state (slot 1)" },
+                                  { "F + L", "Load state (slot 1)" }, { "F + R2", "Fast-forward on / off" },
+                                  { "F + SELECT", "Screenshot" }, { "F + Y", "FPS counter" }, { "F + START", "Quit game" },
+                                  { "VOL + / -", "Volume" }, { "F + VOL + / -", "Brightness" } };
     if (i < 0 || i >= (int)(sizeof K / sizeof *K)) return 0;
     *keys = K[i][0];
     *what = K[i][1];
