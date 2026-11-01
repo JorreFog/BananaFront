@@ -156,14 +156,15 @@ static void stats_line(bool final)
 
 // ---- the picture -----------------------------------------------------------------------------------------------
 
-// BANANAFRONT_DIRECT=1 (a core may A/B it on its stress ROM): the core draws straight into the scanout buffer
-// (GET_CURRENT_SOFTWARE_FRAMEBUFFER), so the frame needs no copy. The buffer is uncached (write-combined) memory: a
-// core that reads back what it drew gets slower, hence opt-in.
+// A core that asks for it (GET_CURRENT_SOFTWARE_FRAMEBUFFER: FCEUmm/BananaNES, of tonight's) draws straight into
+// the scanout buffer, so the frame needs no copy: BananaNES on the RG DS 1.49 -> 1.34 ms/frame (nes, 03:40). The
+// buffer is uncached (write-combined) memory - a core reading back what it drew would get slower, not wrong -
+// so BANANAFRONT_DIRECT=0 turns it off for an A/B.
 static void* direct_buf;
 static int direct_on = -1;
 bool bf_direct_framebuffer(struct retro_framebuffer* fb)
 {
-    if (direct_on < 0) direct_on = getenv("BANANAFRONT_DIRECT") && atoi(getenv("BANANAFRONT_DIRECT"));
+    if (direct_on < 0) direct_on = !getenv("BANANAFRONT_DIRECT") || atoi(getenv("BANANAFRONT_DIRECT"));
     if (!direct_on || bf_video_wants_xrgb() || g_core.fmt == RETRO_PIXEL_FORMAT_0RGB1555) return false;
     int pitch = 0;
     void* p = bf_video_begin(fb->width, fb->height, g_core.fmt, g_core.av.geometry.aspect_ratio, &pitch);
