@@ -7,6 +7,7 @@
 # Pass: each step's log says it read/loaded the other's file. The ROM's own save/state files are removed first and
 # after (use a test ROM, never an owner's game). Run under the lock.
 set -u
+[ -f "${4:-}" ] || [ "$(basename "$0")" = devrun.sh ] || { echo "no ROM ${4:-}" >&2; exit 2; }
 DEV=$1 SYS=$2 CORE=$3 ROM=$4 SEC=${5:-12}
 R=$(cd "$(dirname "$0")/.." && pwd)
 BOARD=$([ "$DEV" = plus ] && echo rgds-plus || echo rgds)

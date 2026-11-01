@@ -14,6 +14,7 @@
 # MID='<bash commands>': run on the PC half-way (DEV and OUT set), e.g. to open the menu and take a picture.
 # Results: ~/bf-runs/<rom>/<date>-<dev>-<tag>/  (bananafront.log, stats.txt, game-id, saves)
 set -u
+[ -f "${4:-}" ] || [ "$(basename "$0")" = devrun.sh ] || { echo "no ROM ${4:-}" >&2; exit 2; }
 DEV=$1 SYS=$2 CORE=$3 ROM=$4 SEC=$5 TAG=${6:-run}
 R=$(cd "$(dirname "$0")/.." && pwd)
 BOARD=$([ "$DEV" = plus ] && echo rgds-plus || echo rgds)

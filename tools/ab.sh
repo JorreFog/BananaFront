@@ -6,6 +6,7 @@
 #   temperature start/end, RSS; BananaFront's own stats lines too. Run under the lock (locked.sh <dev> -w 1800 --).
 # Out: ~/bf-runs/ab-<rom>/<date>-<dev>-<tag>/{results.tsv, *.log}
 set -u
+[ -f "${4:-}" ] || [ "$(basename "$0")" = devrun.sh ] || { echo "no ROM ${4:-}" >&2; exit 2; }
 DEV=$1 SYS=$2 CORE=$3 ROM=$4 SEC=$5 ROUNDS=${6:-2} TAG=${7:-ab}
 R=$(cd "$(dirname "$0")/.." && pwd)
 BOARD=$([ "$DEV" = plus ] && echo rgds-plus || echo rgds)
