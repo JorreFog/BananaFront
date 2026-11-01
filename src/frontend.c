@@ -307,6 +307,8 @@ static bool write_png(const char* path, const uint32_t* px, unsigned w, unsigned
     return ok;
 }
 
+void bf_png_write(const char* path, const uint32_t* px, unsigned w, unsigned h) { write_png(path, px, w, h); }
+
 void bf_thumbnail_write(const char* state_path)
 {
     unsigned w, h;

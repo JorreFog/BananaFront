@@ -27,7 +27,9 @@
 #include <getopt.h>
 #include <math.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -269,7 +271,24 @@ static void sram_load(void)
     }
 }
 
-// write what changed since the last write; force: also when unchanged and no file yet
+// the save's write off the main thread while the game runs (an fsync on the card can take 100 ms: a dropped frame
+// every 10 s for a game that writes its save all the time); the last one on quit is written here and waited for
+typedef struct { char path[1600]; void* data; size_t size; } sram_job;
+static int writes_in_flight;  // (saves and states being written on threads: waited for before the program ends)
+static pthread_mutex_t sram_mu = PTHREAD_MUTEX_INITIALIZER;
+static void* sram_thread(void* a)
+{
+    sram_job* j = a;
+    pthread_mutex_lock(&sram_mu);  // (one write at a time, in order)
+    const bool ok = bf_write_file(j->path, j->data, j->size);
+    pthread_mutex_unlock(&sram_mu);
+    if (!ok) bf_log("save: can't write %s: %s", j->path, strerror(errno));
+    free(j->data);
+    free(j);
+    __atomic_sub_fetch(&writes_in_flight, 1, __ATOMIC_ACQ_REL);
+    return NULL;
+}
+
 static void sram_save(bool final)
 {
     if (getenv("BANANAFRONT_NO_SAVE_WRITE")) return;  // (tests in someone's game: their save left alone)
@@ -278,13 +297,18 @@ static void sram_save(bool final)
         void* mem = g_core.get_memory_data(s->id);
         if (!mem || !s->size || !s->last) continue;
         if (!memcmp(mem, s->last, s->size)) continue;
-        char p[1600];
-        bf_path_save(&g_paths, s->ext, p, sizeof p);
+        memcpy(s->last, mem, s->size);
+        sram_job* j = malloc(sizeof *j);
+        if (!j || !(j->data = malloc(s->size))) { free(j); continue; }
+        bf_path_save(&g_paths, s->ext, j->path, sizeof j->path);
         bf_mkdirs(g_paths.save_dir);
-        if (bf_write_file(p, mem, s->size)) {
-            memcpy(s->last, mem, s->size);
-            bf_log("save written: %s%s", p, final ? " (quit)" : "");
-        } else bf_log("save: can't write %s: %s", p, strerror(errno));
+        memcpy(j->data, mem, s->size);
+        j->size = s->size;
+        bf_log("save written: %s%s", j->path, final ? " (quit)" : "");
+        pthread_t t;
+        __atomic_add_fetch(&writes_in_flight, 1, __ATOMIC_ACQ_REL);
+        if (final || pthread_create(&t, NULL, sram_thread, j) != 0) sram_thread(j);
+        else pthread_detach(t);
     }
 }
 
@@ -292,30 +316,59 @@ static void sram_save(bool final)
 
 __attribute__((weak)) void bf_thumbnail_write(const char* state_path) { (void)state_path; }
 
+// a state: the core's data and the picture taken here (main thread, between frames), compressed and written on a
+// thread (the game goes on: ~10-60 ms of zlib + the card's fsync); written here when quitting
+typedef struct { int slot; char path[1600]; void* core; size_t n; uint32_t* px; unsigned w, h; double t0; } state_job;
+static pthread_mutex_t state_mu = PTHREAD_MUTEX_INITIALIZER;
+extern void bf_png_write(const char* path, const uint32_t* px, unsigned w, unsigned h);
+static void* state_thread(void* a)
+{
+    state_job* j = a;
+    pthread_mutex_lock(&state_mu);
+    size_t fs = 0;
+    void* f = bf_state_pack(j->core, j->n, true, &fs);
+    bool ok = f && bf_write_file(j->path, f, fs);
+    free(f);
+    if (ok && j->px) {
+        char p[1700];
+        snprintf(p, sizeof p, "%s.png", j->path);
+        bf_png_write(p, j->px, j->w, j->h);
+    }
+    pthread_mutex_unlock(&state_mu);
+    bf_log("state %s: %s (%zu -> %zu bytes, %.0f ms)", ok ? "saved" : "NOT saved", j->path, j->n, fs, bf_now_ms() - j->t0);
+    frontend_event(ok ? BF_EV_STATE_SAVED : BF_EV_STATE_FAILED, j->slot);
+    free(j->core);
+    free(j->px);
+    free(j);
+    __atomic_sub_fetch(&writes_in_flight, 1, __ATOMIC_ACQ_REL);
+    return (void*)(intptr_t)ok;
+}
+
 bool bf_state_save(int s)
 {
     size_t n = g_core.serialize_size();
     if (!n) { bf_log("state: the core can't save states"); return false; }
     bf_cpugov_boost(1000);
-    void* d = malloc(n);
-    double t = bf_now_ms();
-    if (!d || !g_core.serialize(d, n)) { free(d); bf_log("state: the core's save failed"); return false; }
-    size_t fs = 0;
-    void* f = bf_state_pack(d, n, true, &fs);
-    free(d);
-    char p[1600];
-    bf_path_state(&g_paths, s, p, sizeof p);
+    state_job* j = calloc(1, sizeof *j);
+    if (!j || !(j->core = malloc(n))) { free(j); return false; }
+    j->t0 = bf_now_ms();
+    if (!g_core.serialize(j->core, n)) { free(j->core); free(j); bf_log("state: the core's save failed"); return false; }
+    j->n = n;
+    j->slot = s;
+    j->px = bf_frame_rgb(&j->w, &j->h);
+    bf_path_state(&g_paths, s, j->path, sizeof j->path);
     bf_mkdirs(g_paths.state_dir);
-    bool ok = f && bf_write_file(p, f, fs);
-    free(f);
-    if (ok) bf_thumbnail_write(p);
-    bf_log("state %s: %s (%zu -> %zu bytes, %.0f ms)", ok ? "saved" : "NOT saved", p, n, fs, bf_now_ms() - t);
-    frontend_event(ok ? BF_EV_STATE_SAVED : BF_EV_STATE_FAILED, s);
-    return ok;
+    pthread_t t;
+    __atomic_add_fetch(&writes_in_flight, 1, __ATOMIC_ACQ_REL);
+    if (bf_quitting() || pthread_create(&t, NULL, state_thread, j) != 0) return state_thread(j) != NULL;
+    pthread_detach(t);
+    return true;
 }
 
 bool bf_state_load(int s)
 {
+    pthread_mutex_lock(&state_mu);  // (a state still being written is waited for)
+    pthread_mutex_unlock(&state_mu);
     if (ra_hardcore()) { bf_log("state: no loading in hardcore"); bf_popup_push("RetroAchievements", "Hardcore: no states", 0xff7a4a, 3000); return false; }
     char p[1600];
     bf_path_state(&g_paths, s, p, sizeof p);
@@ -697,6 +750,8 @@ int main(int argc, char** argv)
     stats_line(true);
     if ((A.resume_save && !quit_nosave) || sig_state) bf_state_save(-1);
     sram_save(true);
+    // (the writes still on their threads finish first: up to 10 s, never cut short by our own exit)
+    for (int i = 0; i < 1000 && __atomic_load_n(&writes_in_flight, __ATOMIC_ACQUIRE) > 0; i++) usleep(10000);
     frontend_quit();
     bf_cpugov_stop();
     bf_input_close();
