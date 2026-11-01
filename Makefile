@@ -33,8 +33,9 @@ $(OUT)/librc.a: $(patsubst $(RC)/src/%.c,$(OUT)/rc/%.o,$(RC_SRC))
 	$(AR) rcs $@ $^
 $(OUT)/bananafront: $(SRC_DEVICE) src/*.h Makefile $(OUT)/librc.a
 	@mkdir -p $(OUT)
-	$(CC) $(A55_CFLAGS) $(A55_DRM_CFLAGS) -Isrc -I$(RC)/include -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ $(SRC_DEVICE) $(OUT)/librc.a \
+	$(CC) $(A55_CFLAGS) $(A55_DRM_CFLAGS) -Isrc -I$(RC)/include -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@.new $(SRC_DEVICE) $(OUT)/librc.a \
 		$(A55_LDFLAGS) -ldrm -lasound -lz -lm -ldl -lpthread
+	@mv -f $@.new $@  # (whole: a test copying it meanwhile never gets half a program)
 	@ls -la $@
 
 HOSTCC ?= cc

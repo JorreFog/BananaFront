@@ -132,12 +132,12 @@ static void stats_line(bool final)
     char b[512];
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
-             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms frontend %.3f ms/frame "
+             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms missed %llu frontend %.3f ms/frame "
              "(copy %.3f audio %.3f commit %.3f)",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
-             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, S.frames ? (S.fe_ms + aud) / S.frames : 0,
+             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, (unsigned long long)S.missed, S.frames ? (S.fe_ms + aud) / S.frames : 0,
              S.frames ? S.copy_ms / S.frames : 0, S.frames ? aud / S.frames : 0, S.frames ? S.commit_ms / S.frames : 0);
     bf_log("%s", b);
     if (A.stats) {
@@ -151,6 +151,7 @@ static void stats_line(bool final)
     S.lat_sum = 0;
     S.lat_n = 0;
     S.fe_ms = S.copy_ms = S.commit_ms = 0;
+    S.missed = 0;
     S.t0 = now;
     S.cpu0 = cpu_ms();
 }
