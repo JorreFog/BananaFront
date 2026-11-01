@@ -16,7 +16,9 @@ What it has (2026-11-01): the in-game menu (BananaDS's, one panel; Quick setting
 picture size), RetroAchievements (rcheevos rc_client, RetroArch's token, offline answer cache), GPU shaders (BananaOS's
 GLSL set; the GPU's fence in the commit), the screen border and pop-ups on an overlay plane, low latency (each frame
 started as late as it still makes its refresh), its own clock governor (option), 2-4 players, quick resume, power-off
-resume (SIGUSR1), PR #151's button jobs, the direct framebuffer for cores that ask, saves/states written on threads.
+resume (SIGUSR1), PR #151's button jobs, the direct framebuffer for cores that ask, saves/states written on threads,
+pads connected while playing (players 2-4), frames a slow refresh left behind caught up when they fit, the sound
+device opened on a thread (the Plus's amps take 0.3 s), RetroArch hotkeys off (ra_hotkeys) honoured.
 
 Measured against RetroArch through the same menu launch (tools/ab.sh, CPU% x clock = cycles, both handhelds): GBC
 -50/-57 %, GBA -40 %, MD -33/-25 %, SNES -23 %, PICO-8 -6/-7 %, NES -4/-3 %; RSS 37-53 MB -> 7-27 MB. Saves and states
