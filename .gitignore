@@ -1,3 +1,4 @@
 build/
 stressrom/gb-homebrew/*.gb*
 stressrom/md-homebrew/*.bin
+stressrom/p8-homebrew/*.png
