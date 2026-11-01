@@ -770,7 +770,9 @@ int main(int argc, char** argv)
         S.frames += nrun;
         if (S.n < NSAMP && nrun) S.run_ms[S.n++] = (t1 - t0) / nrun;
         if (nrun && !ff) last_frame_ms += ((t1 - t0) / nrun - last_frame_ms) * 0.1;  // (smoothed: one spike decides nothing)
-        const bool late = t1 - bf_video_last_flip_ms() > 1000.0 / refresh;
+        // (a gap of 100 ms or more is a stop - the menu, a sleep (SIGSTOP), a state written - not a late frame)
+        const double since_flip = t1 - bf_video_last_flip_ms();
+        const bool late = since_flip > 1000.0 / refresh && since_flip < 100;
         if (late) S.late++;
         // the input's age when the picture starts to show: from the read to the next refresh
         if (bf_video_last_flip_ms() > 0) {
