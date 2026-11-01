@@ -18,6 +18,7 @@
 //     --frames <n>          quit after n frames (benchmarks)
 //     --stats <file>        a line of numbers every 10 s, and a summary at the end
 //     --shader <name>       a GPU shader pass (<name>.frag in DSFLIP_SHADER_DIR: zfast-lcd, zfast-crt, sharp-bilinear...)
+//     --lowlat              each frame started as late as it can be (fresher input): the frame delay found by itself
 //     --cpugov              BananaFront's own clock governor (cpugov.c) instead of the system's profile
 #define _GNU_SOURCE
 #include <errno.h>
@@ -63,7 +64,7 @@ static struct {
     int audio_ms;
     int screen;
     enum bf_scale scale;
-    bool resume_load, resume_save, cpugov;
+    bool resume_load, resume_save, cpugov, lowlat;
     const char* shader;
     long frames;
     const char* stats;
@@ -93,6 +94,8 @@ static struct {
     double t0, cpu0;
     double flip_prev, flip_sum;
     uint64_t flip_n;
+    double lat_sum;
+    uint64_t lat_n;
 } S;
 
 static double cpu_ms(void)
@@ -120,11 +123,11 @@ static void stats_line(bool final)
     char b[512];
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
-             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u",
+             "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
-             as.dropped, bf_cpugov_mhz());
+             as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0);
     bf_log("%s", b);
     if (A.stats) {
         FILE* f = fopen(A.stats, "a");
@@ -134,6 +137,8 @@ static void stats_line(bool final)
     S.frames = S.vblanks = S.dupes = S.late = 0;
     S.flip_sum = 0;
     S.flip_n = 0;
+    S.lat_sum = 0;
+    S.lat_n = 0;
     S.t0 = now;
     S.cpu0 = cpu_ms();
 }
@@ -472,7 +477,7 @@ static bool parse_args(int argc, char** argv)
         { "system", 1, 0, 's' }, { "saves", 1, 0, 'S' }, { "save-dir", 1, 0, 'D' }, { "states", 1, 0, 'T' },
         { "shots", 1, 0, 'P' }, { "bios", 1, 0, 'B' }, { "config", 1, 0, 'C' }, { "screen", 1, 0, 'n' },
         { "scale", 1, 0, 'z' }, { "audio-device", 1, 0, 'a' }, { "audio-latency", 1, 0, 'l' },
-        { "resume-load", 0, 0, 'r' }, { "cpugov", 0, 0, 'g' }, { "shader", 1, 0, 'H' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
+        { "resume-load", 0, 0, 'r' }, { "cpugov", 0, 0, 'g' }, { "lowlat", 0, 0, 'L' }, { "shader", 1, 0, 'H' }, { "resume-save", 0, 0, 'R' }, { "frames", 1, 0, 'f' }, { "stats", 1, 0, 'x' },
         { "help", 0, 0, 'h' }, { 0, 0, 0, 0 } };
     int c;
     while ((c = getopt_long(argc, argv, "", o, NULL)) != -1) {
@@ -490,6 +495,7 @@ static bool parse_args(int argc, char** argv)
         case 'l': A.audio_ms = atoi(optarg); break;
         case 'r': A.resume_load = true; break;
         case 'g': A.cpugov = true; break;
+        case 'L': A.lowlat = true; break;
         case 'H': A.shader = optarg; break;
         case 'R': A.resume_save = true; break;
         case 'f': A.frames = atol(optarg); break;
@@ -537,6 +543,7 @@ int main(int argc, char** argv)
     if (!bf_audio_open(A.audio_dev, A.audio_ms)) bf_log("audio: none, the game runs silent");
     bf_audio_set_rate(g_core.av.timing.sample_rate, fps, refresh, locked);
     bf_input_open(on_button);
+    if (getenv("BANANAFRONT_LOWLAT") && atoi(getenv("BANANAFRONT_LOWLAT"))) A.lowlat = true;
     if (A.cpugov || (getenv("BANANAFRONT_CPUGOV") && atoi(getenv("BANANAFRONT_CPUGOV")))) bf_cpugov_start(g_paths.game, refresh);
     load_jobs();
     frontend_init(A.system, A.rom);
@@ -556,6 +563,7 @@ int main(int argc, char** argv)
     S.cpu0 = cpu_ms();
     double next_stats = S.t0 + 10000, next_sram = S.t0 + 10000;
     double acc = 0;  // time-paced: frames owed
+    double ll_budget = 1000.0 / refresh;  // --lowlat: how long before the next refresh a frame starts
     bool want_frame = true;
     while (!quit && !sig_quit) {
         // wait: for the flip (the next refresh), input, commands
@@ -569,7 +577,15 @@ int main(int argc, char** argv)
         const int cpos = n;
         if (cmd_fd >= 0) pf[n++] = (struct pollfd){ cmd_fd, POLLIN, 0 };
         const bool can_run = !bf_video_flip_pending() && want_frame && !paused;
-        int r = poll(pf, n, can_run ? 0 : (paused ? 50 : 100));
+        // low latency (--lowlat): the frame starts as late as it can and still make the next refresh, so the
+        // buttons it reads are that much fresher (RetroArch's frame delay, set by itself from the frames' times)
+        int timeout = can_run ? 0 : (paused ? 50 : 100);
+        if (can_run && A.lowlat && !ff) {
+            const double wake = bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget;
+            const double now = bf_now_ms();
+            if (wake > now + 0.5) timeout = (int)(wake - now);
+        }
+        int r = poll(pf, n, timeout);
         if (r < 0 && errno != EINTR) break;
         if (r > 0) {
             if (vfd >= 0 && (pf[0].revents & POLLIN)) {
@@ -587,6 +603,8 @@ int main(int argc, char** argv)
         if (bf_menu_run_pending()) want_frame = true;  // (the menu took the flip events while it was open)
         if (paused) { frontend_paused(); continue; }
         if (bf_video_flip_pending() || !want_frame) continue;
+        if (A.lowlat && !ff && bf_now_ms() < bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget - 0.5) continue;
+        const double input_at = bf_now_ms();
 
         // the frame(s) for this refresh
         int nrun = 1;
@@ -613,6 +631,21 @@ int main(int argc, char** argv)
         if (S.n < NSAMP && nrun) S.run_ms[S.n++] = (t1 - t0) / nrun;
         const bool late = t1 - bf_video_last_flip_ms() > 1000.0 / refresh;
         if (late) S.late++;
+        // the input's age when the picture starts to show: from the read to the next refresh
+        if (bf_video_last_flip_ms() > 0) {
+            S.lat_sum += bf_video_last_flip_ms() + 1000.0 / refresh * (late ? 2 : 1) - input_at;
+            S.lat_n++;
+        }
+        if (A.lowlat && !ff) {
+            // the budget: the slowest recent frame and 3 ms for the commit to land before the panel latches it;
+            // a late frame adds 2 ms at once, and it shrinks back slowly
+            if (late) ll_budget += 2.0;
+            const double want = (t1 - t0) * 1.3 + 3.0;
+            if (want > ll_budget) ll_budget = want;
+            else ll_budget -= (ll_budget - want) * 0.01;
+            const double cap = 1000.0 / refresh - 1.0;
+            if (ll_budget > cap) ll_budget = cap;
+        }
         if (!ff) bf_cpugov_frame(t1 - t0, late);
         bf_cpugov_tick();
         frontend_frame();

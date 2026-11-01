@@ -1,1 +1,3 @@
 build/
+stressrom/gb-homebrew/*.gb*
+stressrom/md-homebrew/*.bin
