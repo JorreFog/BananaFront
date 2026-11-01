@@ -105,7 +105,24 @@ static struct {
     uint64_t caught;  // frames run to catch up after a slow refresh
     double copy_ms, commit_ms;  // (the parts of fe_ms: the picture's copy, and frontend_frame + the commit)
     double fe_ms;  // BananaFront's own time (the picture's copy, the sound, the commit, the overlay's wake-up)
+    double mhz_sum;  // the CPU's clock, read every 6th frame (what schedutil gave, cpugov off)
+    unsigned mhz_n, mhz_min;
 } S;
+
+static void sample_clock(void)
+{
+    static int fd = -2;
+    if (fd == -2) fd = open("/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    char b[24];
+    const ssize_t r = pread(fd, b, sizeof b - 1, 0);
+    if (r <= 0) return;
+    b[r] = 0;
+    const unsigned m = (unsigned)(atol(b) / 1000);
+    S.mhz_sum += m;
+    S.mhz_n++;
+    if (!S.mhz_min || m < S.mhz_min) S.mhz_min = m;
+}
 
 static double cpu_ms(void)
 {
@@ -134,12 +151,13 @@ static void stats_line(bool final)
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
              "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms missed %llu caught-up %llu frontend %.3f ms/frame "
-             "(copy %.3f audio %.3f commit %.3f)",
+             "(copy %.3f audio %.3f commit %.3f) mhz %.0f/%u (avg/min)",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
              as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, (unsigned long long)S.missed, (unsigned long long)S.caught, S.frames ? (S.fe_ms + aud) / S.frames : 0,
-             S.frames ? S.copy_ms / S.frames : 0, S.frames ? aud / S.frames : 0, S.frames ? S.commit_ms / S.frames : 0);
+             S.frames ? S.copy_ms / S.frames : 0, S.frames ? aud / S.frames : 0, S.frames ? S.commit_ms / S.frames : 0,
+             S.mhz_n ? S.mhz_sum / S.mhz_n : 0, S.mhz_min);
     bf_log("%s", b);
     if (A.stats) {
         FILE* f = fopen(A.stats, "a");
@@ -154,6 +172,8 @@ static void stats_line(bool final)
     S.fe_ms = S.copy_ms = S.commit_ms = 0;
     S.missed = 0;
     S.caught = 0;
+    S.mhz_sum = 0;
+    S.mhz_n = S.mhz_min = 0;
     S.t0 = now;
     S.cpu0 = cpu_ms();
 }
@@ -620,6 +640,17 @@ static bool parse_args(int argc, char** argv)
     return true;
 }
 
+// an owed frame run now, while the flip waits, and the next refresh's frame both still done before the refresh after
+// the waiting flip's (the commit needs ~1.5 ms)
+static bool catchup_fits(double refresh, double frame_ms)
+{
+    const double p = 1000.0 / refresh, now = bf_now_ms();
+    double next_vbl = bf_video_last_flip_ms() + p;  // where the waiting flip lands
+    while (next_vbl < now + 0.5) next_vbl += p;
+    const double start_next = now + frame_ms > next_vbl ? now + frame_ms : next_vbl;
+    return start_next + frame_ms + 1.5 < next_vbl + p;
+}
+
 int main(int argc, char** argv)
 {
     if (!parse_args(argc, argv)) return 2;
@@ -680,7 +711,8 @@ int main(int argc, char** argv)
     double next_stats = S.t0 + 10000, next_sram = S.t0 + 10000;
     double acc = 0;  // time-paced: frames owed
     double ll_budget = 1000.0 / refresh;  // --lowlat: how long before the next refresh a frame starts
-    int owed = 0;  // frames a slow refresh left behind, run in the next one
+    int owed = 0;  // frames a slow refresh left behind, run in the next one (or between refreshes)
+    double owed_since = 0;
     double last_frame_ms = 1000.0 / refresh;  // a core frame's time, smoothed
     bool want_frame = true;
     while (!quit && !sig_quit) {
@@ -705,6 +737,7 @@ int main(int argc, char** argv)
             const double now = bf_now_ms();
             if (wake > now + 0.5) timeout = (int)(wake - now);
         }
+        if (owed > 0 && locked && !ff && !paused && bf_video_flip_pending() && catchup_fits(refresh, last_frame_ms)) timeout = 0;
         int r = poll(pf, n, timeout);
         if (r < 0 && errno != EINTR) break;
         if (r > 0) {
@@ -718,7 +751,7 @@ int main(int argc, char** argv)
                 if (locked && S.flip_prev > 0 && t - S.flip_prev > 1500.0 / refresh && t - S.flip_prev < 100) {
                     int gap = (int)((t - S.flip_prev) * refresh / 1000.0 + 0.5) - 1;
                     owed += gap;
-                    if (owed > 2) owed = 2;
+                    if (owed > 3) owed = 3;
                 }
                 // low latency: a flip that came a refresh late (the commit missed its vblank: a slow frame, the
                 // GPU's shader pass) widens the budget at once, whatever the frame's own time said
@@ -738,16 +771,41 @@ int main(int argc, char** argv)
         bf_input_hotplug_tick();
         if (bf_menu_run_pending()) want_frame = true;  // (the menu took the flip events while it was open)
         if (paused) { frontend_paused(); continue; }
+        // owed frames a refresh couldn't hold (a core frame of 10-13 ms: two don't fit in one refresh): one is run
+        // while the flip waits, its picture never shown, when it and the next refresh's frame both still fit before
+        // the refresh after the flip's (a spike - a game loading, 1-2 frames of work in one - would otherwise take a
+        // frame of sound each time, and DRC's 0.5 % gives back one frame in 3 s: underruns when loads come often)
+        if (owed > 0 && locked && !ff && bf_video_flip_pending()) {
+            const double now = bf_now_ms();
+            if (owed_since == 0) owed_since = now;
+            if (now - owed_since > 2000) owed = 0;  // (the sound's rate control takes it from here)
+            else if (catchup_fits(refresh, last_frame_ms)) {
+                const double t0 = bf_now_ms();
+                g_core.run();
+                frontend_core_frame();
+                bf_audio_flush();
+                owed--;
+                S.caught++;
+                S.frames++;
+                frames_run++;
+                last_frame_ms += (bf_now_ms() - t0 - last_frame_ms) * 0.1;
+                continue;
+            }
+        }
+        if (owed == 0) owed_since = 0;
         if (bf_video_flip_pending() || !want_frame) continue;
         if (ll && bf_now_ms() < bf_video_last_flip_ms() + 1000.0 / refresh - ll_budget - 0.5) continue;
         const double input_at = bf_now_ms();
 
         // the frame(s) for this refresh
         // (only as many as fit in a refresh at the last frames' pace: catching up must never make the next one late)
-        while (owed > 0 && last_frame_ms * (1 + owed) > 900.0 / refresh) owed--;
-        int nrun = 1 + (ff ? 0 : owed);
-        S.caught += owed;
-        owed = 0;
+        // (what doesn't fit stays owed: run between refreshes below, while the flip waits, or dropped after 2 s)
+        int extra = ff ? 0 : owed;
+        while (extra > 0 && last_frame_ms * (1 + extra) > 900.0 / refresh) extra--;
+        int nrun = 1 + extra;
+        S.caught += extra;
+        owed -= extra;
+        if (ff) owed = 0;
         if (!locked) {
             acc += fps / refresh;
             nrun = (int)acc;
@@ -790,6 +848,7 @@ int main(int argc, char** argv)
             if (ll_budget > cap) ll_budget = cap;
         }
         if (!ff) bf_cpugov_frame(t1 - t0, late);
+        if (frames_run % 6 == 0) sample_clock();
         bf_cpugov_tick();
         const double tf = bf_now_ms();
         bf_audio_flush();
