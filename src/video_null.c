@@ -104,3 +104,8 @@ uint32_t* bf_video_overlay(int rows, int* pitch, int* w) { (void)rows; (void)pit
 void bf_video_overlay_show(bool on) { (void)on; }
 bool bf_video_has_overlay(void) { return false; }
 void bf_video_fixed_rect(int x, int y, int w, int h) { (void)x; (void)y; (void)w; (void)h; }
+void bf_video_shader_off(void) {}
+const char* bf_video_shader_name(void) { return ""; }
+static enum bf_scale sc;
+void bf_video_set_scale(enum bf_scale s) { sc = s; }
+enum bf_scale bf_video_get_scale(void) { return sc; }

@@ -31,7 +31,11 @@ int bf_video_canvas(uint32_t** px, int* pitch, int* w, int* h);
 void bf_video_canvas_show(int k);
 void bf_video_canvas_done(void);  // the game's picture back
 bool bf_video_shader(const char* name);  // a GPU shader pass (shader.c); false: unavailable
-bool bf_video_wants_xrgb(void);          // the game's buffers are XRGB8888 whatever the core's format (the shader's input)
+bool bf_video_wants_xrgb(void);
+void bf_video_shader_off(void);
+const char* bf_video_shader_name(void);  // "" for none
+void bf_video_set_scale(enum bf_scale s);
+enum bf_scale bf_video_get_scale(void);          // the game's buffers are XRGB8888 whatever the core's format (the shader's input)
 // the overlay plane (pop-ups over the game): a transparent ARGB8888 buffer, the panel's width x rows, to draw the next
 // picture's overlay in (NULL: no overlay plane); _show(true) puts it up with the next commit, false takes it down
 uint32_t* bf_video_overlay(int rows, int* pitch, int* w);

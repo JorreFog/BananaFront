@@ -325,12 +325,18 @@ bool bf_video_shader(const char* name)
 {
     if (!name || !*name || K.fd < 0) return false;
     shader_fast = 0;  // (its fast twins are DS-specific)
+    // (the shader's environment: the image's folder unless the launcher named one)
+    if (!getenv("DSFLIP_SHADER_DIR")) setenv("DSFLIP_SHADER_DIR", "/usr/lib/superdrastic/shaders", 0);
     K.shader = shader_init(K.fd, name) != 0;
     snprintf(K.shader_name, sizeof K.shader_name, "%s", name);
     bf_log("kms: shader %s: %s", name, K.shader ? "on" : "unavailable, the plane scales instead");
     return K.shader;
 }
 bool bf_video_wants_xrgb(void) { return K.shader; }
+void bf_video_shader_off(void) { K.shader = false; K.shader_name[0] = 0; }
+const char* bf_video_shader_name(void) { return K.shader ? K.shader_name : ""; }
+void bf_video_set_scale(enum bf_scale s) { K.scale = s; }
+enum bf_scale bf_video_get_scale(void) { return K.scale; }
 
 // (re)make the buffers for a picture of w x h, and find out whether the plane scales it
 static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)

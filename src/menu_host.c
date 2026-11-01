@@ -169,6 +169,30 @@ static void sound_play(void* ctx, int id)
     if (id >= 0 && id < 8 && snd[id].pcm) bf_audio_raw(snd[id].pcm, snd[id].frames);
 }
 
+// Quick settings: the picture's look and size, for this game (Settings > Other systems keeps the defaults)
+static const char* SH_NAME[] = { "", "zfast-lcd", "zfast-crt", "sharp-bilinear" };
+static const char* SH_LABEL[] = { "Off", "Fast LCD", "Fast CRT", "Sharp pixels" };
+static const char* SC_LABEL[] = { "Keep the shape", "Whole numbers", "Fill the screen" };
+static int opt_count(void* ctx) { (void)ctx; return 2; }
+static const char* opt_label(void* ctx, int i) { (void)ctx; return i == 0 ? "Shader" : "Picture size"; }
+static int opt_values(void* ctx, int i) { (void)ctx; return i == 0 ? 4 : 3; }
+static const char* opt_value_name(void* ctx, int i, int v) { (void)ctx; return i == 0 ? SH_LABEL[v & 3] : SC_LABEL[v % 3]; }
+static int opt_get(void* ctx, int i)
+{
+    (void)ctx;
+    if (i == 1) return (int)bf_video_get_scale();
+    const char* n = bf_video_shader_name();
+    for (int k = 1; k < 4; k++) if (!strcmp(n, SH_NAME[k])) return k;
+    return 0;
+}
+static void opt_set(void* ctx, int i, int v)
+{
+    (void)ctx;
+    if (i == 1) { bf_video_set_scale((enum bf_scale)(v % 3)); return; }
+    if (v <= 0) bf_video_shader_off();
+    else bf_video_shader(SH_NAME[v & 3]);
+}
+
 static bool inited, open_req;
 
 // F + X, F alone, MENU_TOGGLE: asked here, opened by main's loop between frames (never from inside the command
@@ -203,6 +227,12 @@ bool bf_menu_run_pending(void)
         h.sound_play = sound_play;
         h.boost = boost;
         h.log = mlog;
+        h.opt_count = opt_count;
+        h.opt_label = opt_label;
+        h.opt_values = opt_values;
+        h.opt_value_name = opt_value_name;
+        h.opt_get = opt_get;
+        h.opt_set = opt_set;
         bmenu_init(&h);
         bmenu_session_start();
         inited = true;
