@@ -238,6 +238,7 @@ bool bf_menu_run_pending(void)
         inited = true;
     }
     menu_open = true;
+    frontend_overlay_pause(true);
     bf_input_raw(true);
     bf_audio_pause(true);
     const int ok = bmenu_run(0);
@@ -245,6 +246,7 @@ bool bf_menu_run_pending(void)
     bf_input_raw(false);
     bf_video_canvas_done();
     frontend_menu_closed();
+    frontend_overlay_pause(false);
     menu_open = false;
     if (!ok) bf_log("menu: couldn't open (fonts or panel buffers missing)");
     return true;

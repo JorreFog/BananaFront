@@ -500,17 +500,8 @@ static void* prefetch_thread(void* a)
     snprintf(icon, sizeof icon, "%s/game-%s.png", BADGE_DIR, g && g->badge_name ? g->badge_name : "0");
     fetch_file(icon_url, icon);
     free(icon_url);
-    rc_client_achievement_list_t* l = rc_client_create_achievement_list(rc, RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE,
-                                                                        RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
-    int got = 0, n = 0;
-    for (uint32_t b = 0; l && b < l->num_buckets; b++)
-        for (uint32_t i = 0; i < l->buckets[b].num_achievements; i++) {
-            char path[700];
-            n++;
-            got += badge_fetch(l->buckets[b].achievements[i], path, sizeof path);
-        }
-    if (l) rc_client_destroy_achievement_list(l);
-    ralog("[ra] badges: %d of %d cached in %s", got, n, BADGE_DIR);
+    // (only the game's icon: every badge at the start was 287 TLS fetches on the Plus while the game ran, and a
+    // badge is fetched when its achievement unlocks anyway)
     return 0;
 }
 

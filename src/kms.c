@@ -51,8 +51,8 @@ static struct {
     char shader_name[64];
     uint64_t gen;      // bumped whenever buffers are made again (the shader caches its imports by these numbers)
     uint32_t ov, ov_fb, ov_crtc, ov_sx, ov_sy, ov_sw, ov_sh, ov_cx, ov_cy, ov_cw, ov_ch;  // the overlay plane
-    buf_t ovb[2];
-    int ov_draw, ov_rows;
+    buf_t ovb[4];
+    int ov_draw, ov_rows, ov_pub, ov_scan, ov_prev;
     bool ov_on, ov_was;
     buf_t canvas[2];   // the menu: panel-sized XRGB8888, on the primary plane while the menu is open
     int canvas_shown;
@@ -72,7 +72,8 @@ static struct {
     uint8_t* cpu_src;  // !hw: the core's picture, scaled into the buffer at commit
     int cpu_pitch;
     double last_flip;
-} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1, .canvas_shown = -1, .out_shown = -1, .out_pending = -1 };
+} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1, .canvas_shown = -1, .out_shown = -1, .out_pending = -1,
+        .ov_pub = -1, .ov_scan = -1, .ov_prev = -1 };
 
 static uint32_t prop(uint32_t obj, uint32_t type, const char* name)
 {
@@ -530,38 +531,44 @@ uint32_t* bf_video_grab(int* w, int* h) { (void)w; (void)h; return NULL; }
 
 // ---- the overlay plane: pop-ups and the FPS counter over the game (ARGB8888, premultiplied), the panel's width, the
 // top rows only; in the game's own commit, so it costs nothing while hidden (the plane off)
+// (drawn on frontend.c's overlay thread: four buffers - the one committed last, the one before it (on the panel
+// until that flip is done), the one published for the next commit, and the one being drawn)
 uint32_t* bf_video_overlay(int rows, int* pitch, int* w)
 {
     if (K.fd < 0 || !K.ov || rows <= 0) return NULL;
     if (K.ov_rows != rows) {
-        while (K.pending >= 0) bf_video_events();
-        if (K.ov_was) {  // (the plane off before its buffers go)
-            drmModeAtomicReq* r = drmModeAtomicAlloc();
-            drmModeAtomicAddProperty(r, K.ov, K.ov_fb, 0);
-            drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, 0);
-            drmModeAtomicCommit(K.fd, r, 0, NULL);
-            drmModeAtomicFree(r);
-            K.ov_was = false;
-        }
-        for (int i = 0; i < 2; i++) freebuf(&K.ovb[i]);
-        for (int i = 0; i < 2; i++)
+        // (a new size: only from the main thread's first use, or with the plane off - see frontend.c)
+        for (int i = 0; i < 4; i++) freebuf(&K.ovb[i]);
+        for (int i = 0; i < 4; i++)
             if (!mkbuf(&K.ovb[i], K.mode.hdisplay, (uint32_t)rows, DRM_FORMAT_ARGB8888)) { K.ov = 0; return NULL; }
         K.ov_rows = rows;
+        __atomic_store_n(&K.ov_pub, -1, __ATOMIC_RELEASE);
+        K.ov_scan = K.ov_prev = -1;
     }
-    K.ov_draw ^= 1;  // (the other one may be on the panel)
-    *pitch = (int)K.ovb[K.ov_draw].pitch;
+    const int pub = __atomic_load_n(&K.ov_pub, __ATOMIC_ACQUIRE), scan = __atomic_load_n(&K.ov_scan, __ATOMIC_ACQUIRE);
+    const int prev = __atomic_load_n(&K.ov_prev, __ATOMIC_ACQUIRE);
+    int k = 0;
+    while (k == pub || k == scan || k == prev) k++;
+    K.ov_draw = k;
+    *pitch = (int)K.ovb[k].pitch;
     *w = K.mode.hdisplay;
-    memset(K.ovb[K.ov_draw].map, 0, K.ovb[K.ov_draw].size);
-    return K.ovb[K.ov_draw].map;
+    memset(K.ovb[k].map, 0, K.ovb[k].size);
+    return K.ovb[k].map;
+}
+// the buffer just drawn goes up with the next commit (on), or the plane comes down (off)
+void bf_video_overlay_show(bool on)
+{
+    if (on && K.ov && K.ov_rows) __atomic_store_n(&K.ov_pub, K.ov_draw, __ATOMIC_RELEASE);
+    __atomic_store_n(&K.ov_on, on && K.ov && K.ov_rows, __ATOMIC_RELEASE);
 }
 bool bf_video_has_overlay(void) { return K.ov != 0; }
-void bf_video_overlay_show(bool on) { K.ov_on = on && K.ov && K.ov_rows; }
 
 static void add_overlay(drmModeAtomicReq* r)
 {
     if (!K.ov) return;
-    if (K.ov_on) {
-        const buf_t* b = &K.ovb[K.ov_draw];
+    const int pub = __atomic_load_n(&K.ov_pub, __ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&K.ov_on, __ATOMIC_ACQUIRE) && pub >= 0) {
+        const buf_t* b = &K.ovb[pub];
         drmModeAtomicAddProperty(r, K.ov, K.ov_fb, b->fb);
         drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, K.crtc);
         drmModeAtomicAddProperty(r, K.ov, K.ov_sx, 0);
@@ -572,6 +579,8 @@ static void add_overlay(drmModeAtomicReq* r)
         drmModeAtomicAddProperty(r, K.ov, K.ov_cy, 0);
         drmModeAtomicAddProperty(r, K.ov, K.ov_cw, b->w);
         drmModeAtomicAddProperty(r, K.ov, K.ov_ch, b->h);
+        const int was = __atomic_load_n(&K.ov_scan, __ATOMIC_ACQUIRE);
+        if (was != pub) { __atomic_store_n(&K.ov_prev, was, __ATOMIC_RELEASE); __atomic_store_n(&K.ov_scan, pub, __ATOMIC_RELEASE); }
         K.ov_was = true;
     } else if (K.ov_was) {
         drmModeAtomicAddProperty(r, K.ov, K.ov_fb, 0);
@@ -644,7 +653,7 @@ void bf_video_close(void)
     for (int i = 0; i < NBUF; i++) freebuf(&K.b[i]);
     for (int i = 0; i < 2; i++) freebuf(&K.canvas[i]);
     for (int i = 0; i < NBUF; i++) freebuf(&K.out[i]);
-    for (int i = 0; i < 2; i++) freebuf(&K.ovb[i]);
+    for (int i = 0; i < 4; i++) freebuf(&K.ovb[i]);
     free(K.cpu_src);
     close(K.fd);
     K.fd = -1;

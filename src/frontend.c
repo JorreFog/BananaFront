@@ -275,15 +275,56 @@ static void overlay_frame(void)
     ov_up = true;
 }
 
+// the overlay is drawn on a thread of its own, woken after each frame: a new pop-up's card (two passes of text at
+// the panel's width) took tens of ms, and on the main thread that was frames and sound lost (the Plus, at a game's
+// start with RetroAchievements: 37 fps and 115 underruns in the first 10 s)
+static pthread_t ov_thr;
+static pthread_mutex_t ov_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ov_cv = PTHREAD_COND_INITIALIZER;
+static bool ov_tick, ov_stop, ov_paused, ov_started;
+static void* overlay_thread(void* a)
+{
+    (void)a;
+    pthread_mutex_lock(&ov_mu);
+    while (!ov_stop) {
+        while (!ov_tick && !ov_stop) pthread_cond_wait(&ov_cv, &ov_mu);
+        ov_tick = false;
+        if (!ov_stop && !ov_paused) overlay_frame();  // (under the lock: the menu waits for it)
+    }
+    pthread_mutex_unlock(&ov_mu);
+    return NULL;
+}
+// the menu draws with the same fonts: the overlay stops while it is open
+void frontend_overlay_pause(bool p)
+{
+    pthread_mutex_lock(&ov_mu);
+    ov_paused = p;
+    pthread_mutex_unlock(&ov_mu);
+}
+
 void frontend_frame(void)
 {
-    overlay_frame();
+    if (bf_video_has_overlay()) {
+        if (!ov_started) { ov_started = pthread_create(&ov_thr, NULL, overlay_thread, NULL) == 0; }
+        pthread_mutex_lock(&ov_mu);
+        ov_tick = true;
+        pthread_cond_signal(&ov_cv);
+        pthread_mutex_unlock(&ov_mu);
+    }
     comp_frames++;
     if (comp_on) bcomp_service(&comp, comp_frames);
 }
 
 void frontend_quit(void)
 {
+    if (ov_started) {
+        pthread_mutex_lock(&ov_mu);
+        ov_stop = true;
+        pthread_cond_signal(&ov_cv);
+        pthread_mutex_unlock(&ov_mu);
+        pthread_join(ov_thr, NULL);
+        ov_started = false;
+    }
     ra_quit();
     if (comp_on) { bcomp_set_state(&comp, 4, 0); bcomp_detach(&comp); }
     unlink(GAME_ID);
