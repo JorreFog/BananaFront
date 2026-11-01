@@ -871,7 +871,8 @@ int main(int argc, char** argv)
         if (A.frames && (long)frames_run >= A.frames) quit = true;
     }
     stats_line(true);
-    if ((A.resume_save && !quit_nosave) || sig_state) bf_state_save(-1);
+    // (BANANAFRONT_NO_SAVE_WRITE: a test in someone's game leaves their automatic state alone too)
+    if (((A.resume_save && !quit_nosave) || sig_state) && !getenv("BANANAFRONT_NO_SAVE_WRITE")) bf_state_save(-1);
     sram_save(true);
     // (the writes still on their threads finish first: up to 10 s, never cut short by our own exit)
     for (int i = 0; i < 1000 && __atomic_load_n(&writes_in_flight, __ATOMIC_ACQUIRE) > 0; i++) usleep(10000);
