@@ -34,6 +34,8 @@ typedef struct {
 int shader_init(int fd, const char* name);
 int shader_draw(uint32_t sh, int sw, int shh, int sp, uint64_t sgen, uint32_t dh, int dw, int dhh, int dp, uint64_t dgen, int finish);
 extern int shader_fast;
+extern uint32_t shader_src_fourcc;
+int shader_fence(void);
 void dsflip_log(const char* fmt, ...)
 {
     char b[600];
@@ -61,7 +63,7 @@ static struct {
     uint32_t conn, crtc, plane, mode_blob;
     drmModeModeInfo mode;
     bool need_modeset;
-    uint32_t p_fb, p_crtc, p_sx, p_sy, p_sw, p_sh, p_cx, p_cy, p_cw, p_ch, p_conn_crtc, p_mode, p_active;
+    uint32_t p_fb, p_crtc, p_sx, p_sy, p_sw, p_sh, p_cx, p_cy, p_cw, p_ch, p_conn_crtc, p_mode, p_active, p_infence;
     buf_t b[NBUF];
     int shown, pending, drawing;
     bool hw;           // the plane scales
@@ -303,6 +305,7 @@ bool bf_video_open(const bf_video_opts* o)
     K.p_cy = prop(K.plane, P, "CRTC_Y");
     K.p_cw = prop(K.plane, P, "CRTC_W");
     K.p_ch = prop(K.plane, P, "CRTC_H");
+    K.p_infence = prop(K.plane, P, "IN_FENCE_FD");
     K.p_conn_crtc = prop(K.conn, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
     K.p_mode = prop(K.crtc, DRM_MODE_OBJECT_CRTC, "MODE_ID");
     K.p_active = prop(K.crtc, DRM_MODE_OBJECT_CRTC, "ACTIVE");
@@ -318,7 +321,7 @@ static void add_overlay(drmModeAtomicReq* r);
 
 static uint32_t drm_fmt(int core_fmt)
 {
-    return core_fmt == RETRO_PIXEL_FORMAT_XRGB8888 || K.shader ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB565;
+    return core_fmt == RETRO_PIXEL_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB565;
 }
 
 // the shader (Settings > Other systems > Shader): GL comes up here, once; false: none (the plane scales as without)
@@ -333,7 +336,7 @@ bool bf_video_shader(const char* name)
     bf_log("kms: shader %s: %s", name, K.shader ? "on" : "unavailable, the plane scales instead");
     return K.shader;
 }
-bool bf_video_wants_xrgb(void) { return K.shader; }
+bool bf_video_wants_xrgb(void) { return false; }  // (the shader imports RGB565 as it is)
 void bf_video_shader_off(void) { K.shader = false; K.shader_name[0] = 0; }
 const char* bf_video_shader_name(void) { return K.shader ? K.shader_name : ""; }
 void bf_video_set_scale(enum bf_scale s) { K.scale = s; }
@@ -459,6 +462,7 @@ bool bf_video_commit(bool dupe)
     if (k < 0) return false;
     if (!dupe && !K.hw) cpu_scale(&K.b[k]);
     drmModeAtomicReq* r = drmModeAtomicAlloc();
+    int fence = -1;
     if (K.shader && ensure_out(K.src_w, K.src_h)) {
         // the shader pass: the game's buffer -> an output buffer the size of its place on the panel (GPU, waited for:
         // the commit must not show a half-drawn picture)
@@ -467,15 +471,19 @@ bool bf_video_commit(bool dupe)
             o = 0;
             while (o == K.out_shown || o == K.out_pending) o++;
             const buf_t* sb = &K.b[k];
+            shader_src_fourcc = sb->fmt;
+            // (no glFinish: the commit carries the GPU's fence and the display waits for it, not this thread)
             if (shader_draw(sb->handle, (int)K.src_w, (int)K.src_h, (int)sb->pitch, K.gen + (uint64_t)k + 1, K.out[o].handle,
-                            (int)K.out[o].w, (int)K.out[o].h, (int)K.out[o].pitch, K.gen + (uint64_t)o + 101, 1)) {
+                            (int)K.out[o].w, (int)K.out[o].h, (int)K.out[o].pitch, K.gen + (uint64_t)o + 101, !K.p_infence)) {
                 bf_log("kms: the shader failed: off");
                 K.shader = false;
-            }
+            } else if (K.p_infence) fence = shader_fence();
         }
         K.out_pending = o;
-        if (K.shader) add_plane_out(r, &K.out[o]);
-        else add_plane(r, &K.b[k], K.src_w, K.src_h);
+        if (K.shader) {
+            add_plane_out(r, &K.out[o]);
+            if (fence >= 0) drmModeAtomicAddProperty(r, K.plane, K.p_infence, (uint64_t)fence);
+        } else add_plane(r, &K.b[k], K.src_w, K.src_h);
     } else
         add_plane(r, &K.b[k], K.src_w, K.src_h);
     add_overlay(r);
@@ -483,6 +491,7 @@ bool bf_video_commit(bool dupe)
     if (K.need_modeset) flags = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_ALLOW_MODESET;
     int ret = drmModeAtomicCommit(K.fd, r, flags, NULL);
     drmModeAtomicFree(r);
+    if (fence >= 0) close(fence);
     if (ret) {
         static int warned;
         if (warned++ < 5) bf_log("kms: commit failed: %s", strerror(-ret));

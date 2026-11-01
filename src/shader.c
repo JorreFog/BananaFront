@@ -218,6 +218,8 @@ typedef struct { uint32_t handle; int w, h, pitch; uint64_t gen; EGLImage img; G
 static gimg cache[NCACHE]; static int ncache, cache_next, imports;
 int shader_imports(void) { int n = imports; imports = 0; return n; }
 
+/* BananaFront: the game's buffer may be RGB565 (the core's own format, imported as it is: no conversion on the CPU) */
+uint32_t shader_src_fourcc = DRM_FORMAT_XRGB8888;
 static gimg *image_for(uint32_t handle, int w, int h, int pitch, uint64_t gen, int target) {
     for (int i = 0; i < ncache; i++) if (cache[i].gen == gen) return &cache[i];
     gimg *g = ncache < NCACHE ? &cache[ncache++] : &cache[cache_next++ % NCACHE];
@@ -229,7 +231,7 @@ static gimg *image_for(uint32_t handle, int w, int h, int pitch, uint64_t gen, i
     memset(g, 0, sizeof *g);
     int prime = -1;
     if (drmPrimeHandleToFD(drm_fd, handle, DRM_CLOEXEC | DRM_RDWR, &prime)) { SLOG("[shader] prime export failed\n"); return 0; }
-    EGLint at[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_XRGB8888,
+    EGLint at[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_LINUX_DRM_FOURCC_EXT, target ? DRM_FORMAT_XRGB8888 : shader_src_fourcc,
                     EGL_DMA_BUF_PLANE0_FD_EXT, prime, EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0, EGL_DMA_BUF_PLANE0_PITCH_EXT, pitch, EGL_NONE };
     g->img = eglCreateImageKHR(dpy, 0, EGL_LINUX_DMA_BUF_EXT, 0, at);
     close(prime);
