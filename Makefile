@@ -21,7 +21,7 @@ RC_FLAGS := -Isrc -I$(RC)/include -DRC_DISABLE_LUA -DRC_CLIENT_SUPPORTS_HASH -w
 
 all: device
 
-include $(HOME)/banana-emu/common/a55.mk
+-include $(HOME)/banana-emu/common/a55.mk
 
 OUT := build/$(BOARD)
 device: $(OUT)/bananafront
