@@ -905,7 +905,7 @@ static void draw_bottom(void) {
             mq_pick = sel; text(c, &F_MED, tile_label[i], x + tw / 2.0f, cy + S(60), S(20), fg, tw - S(16), 1); mq_pick = 0;
             char h[64] = "";
             switch (i) {
-            case 0: snprintf(h, sizeof h, "or press F / L3"); break;
+            case 0: snprintf(h, sizeof h, "or press F"); break;
             case 1: snprintf(h, sizeof h, "%d slots", NSLOT); break;
             case 2: if (nb >= 0) snprintf(h, sizeof h, "last: slot %d", nb + 1); else snprintf(h, sizeof h, "no saves yet"); break;
             case 3: snprintf(h, sizeof h, H.opt_count && H.opt_count(H.ctx) ? "volume, shader, effects" : "volume, brightness"); break;
