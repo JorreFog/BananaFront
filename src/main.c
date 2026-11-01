@@ -637,7 +637,9 @@ int main(int argc, char** argv)
     bf_env_save_dir = g_paths.save_dir;
     bf_mkdirs(g_paths.save_dir);
     bf_core_options_load(A.config, g_paths.game);
+    const double t_core = bf_now_ms();
     if (!bf_core_load_game(A.rom)) { bf_core_close(); return 1; }
+    const double t_game = bf_now_ms();
     bf_mmap_refresh();
     sram_load();
 
@@ -650,7 +652,9 @@ int main(int argc, char** argv)
     // sound scaled to match; else (a 50 Hz game) frames are paced by time and some refreshes repeat one
     const double fps = bf_core_fps();
     const bool locked = fabs(fps - refresh) / refresh < 0.02;
+    const double t_video = bf_now_ms();
     if (!bf_audio_open(A.audio_dev, A.audio_ms)) bf_log("audio: none, the game runs silent");
+    const double t_audio = bf_now_ms();
     bf_audio_set_rate(g_core.av.timing.sample_rate, fps, refresh, locked);
     bf_input_open(on_button);
     if (getenv("BANANAFRONT_LOWLAT") && atoi(getenv("BANANAFRONT_LOWLAT"))) A.lowlat = true;
@@ -667,8 +671,9 @@ int main(int argc, char** argv)
     reply_out = stdout;
 
     if (A.resume_load) bf_state_load(-1);
-    bf_log("running: %.3f fps game on a %.3f Hz panel (%s), started in %.0f ms", fps, refresh,
-           locked ? "one frame a refresh" : "time-paced", bf_now_ms() - t_start);
+    bf_log("running: %.3f fps game on a %.3f Hz panel (%s), started in %.0f ms (core %.0f, game %.0f, panel %.0f, "
+           "sound %.0f, the rest %.0f)", fps, refresh, locked ? "one frame a refresh" : "time-paced", bf_now_ms() - t_start,
+           t_core - t_start, t_game - t_core, t_video - t_game, t_audio - t_video, bf_now_ms() - t_audio);
 
     S.t0 = bf_now_ms();
     S.cpu0 = cpu_ms();
