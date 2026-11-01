@@ -36,6 +36,9 @@ int shader_draw(uint32_t sh, int sw, int shh, int sp, uint64_t sgen, uint32_t dh
 extern int shader_fast;
 extern uint32_t shader_src_fourcc;
 int shader_fence(void);
+void shader_flush(void);
+// BANANAFRONT_SHADER_SYNC=implicit (an A/B): no fence of our own, the kernel's implicit sync on the shared buffer
+static int implicit_sync = -1;
 void dsflip_log(const char* fmt, ...)
 {
     char b[600];
@@ -461,6 +464,7 @@ bool bf_video_commit(bool dupe)
     int k = dupe ? K.shown : K.drawing;
     if (k < 0) return false;
     if (!dupe && !K.hw) cpu_scale(&K.b[k]);
+    if (implicit_sync < 0) implicit_sync = getenv("BANANAFRONT_SHADER_SYNC") && !strcmp(getenv("BANANAFRONT_SHADER_SYNC"), "implicit");
     drmModeAtomicReq* r = drmModeAtomicAlloc();
     int fence = -1;
     if (K.shader && ensure_out(K.src_w, K.src_h)) {
@@ -474,10 +478,11 @@ bool bf_video_commit(bool dupe)
             shader_src_fourcc = sb->fmt;
             // (no glFinish: the commit carries the GPU's fence and the display waits for it, not this thread)
             if (shader_draw(sb->handle, (int)K.src_w, (int)K.src_h, (int)sb->pitch, K.gen + (uint64_t)k + 1, K.out[o].handle,
-                            (int)K.out[o].w, (int)K.out[o].h, (int)K.out[o].pitch, K.gen + (uint64_t)o + 101, !K.p_infence)) {
+                            (int)K.out[o].w, (int)K.out[o].h, (int)K.out[o].pitch, K.gen + (uint64_t)o + 101, !K.p_infence && !implicit_sync)) {
                 bf_log("kms: the shader failed: off");
                 K.shader = false;
-            } else if (K.p_infence) fence = shader_fence();
+            } else if (K.p_infence && !implicit_sync) fence = shader_fence();
+            else if (implicit_sync) shader_flush();  // (the display waits on the buffer's own fences: dma-buf implicit sync)
         }
         K.out_pending = o;
         if (K.shader) {

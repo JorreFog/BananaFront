@@ -608,6 +608,8 @@ int shader_draw(uint32_t sh, int sw, int shh, int sp, uint64_t sgen, uint32_t dh
     return glGetError() ? -1 : 0;
 }
 
+void shader_flush(void) { glFlush(); }   /* BananaFront: the work submitted, no wait */
+
 /* a sync_file that signals when everything drawn so far is done; -1 (after waiting for the GPU) if unsupported */
 int shader_fence(void) {
     int f = -1;
