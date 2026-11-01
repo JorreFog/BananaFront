@@ -59,7 +59,7 @@ static int poll_ev(void* ctx, bmenu_ev* ev)
     for (int i = 0; i < n; i++) pf[i] = (struct pollfd){ fds[i], POLLIN, 0 };
     if (n > 0 && poll(pf, (nfds_t)n, 0) > 0)
         for (int i = 0; i < n; i++)
-            if (pf[i].revents & POLLIN) bf_input_read(pf[i].fd);
+            if (pf[i].revents & (POLLIN | POLLERR | POLLHUP)) bf_input_read(pf[i].fd);
     const double t = bf_now_ms();
     if (t >= next_service) {
         next_service = t + 250;

@@ -732,7 +732,7 @@ int main(int argc, char** argv)
                 want_frame = true;
             }
             for (int i = (vfd >= 0); i < cpos; i++)
-                if (pf[i].revents & POLLIN) bf_input_read(pf[i].fd);
+                if (pf[i].revents & (POLLIN | POLLERR | POLLHUP)) bf_input_read(pf[i].fd);  // (an unplugged pad: read, found gone)
             if (cmd_fd >= 0 && cpos < n && (pf[cpos].revents & (POLLIN | POLLHUP))) bf_commands_poll();
         }
         bf_input_hotplug_tick();
