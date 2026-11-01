@@ -12,6 +12,9 @@ extern bf_paths g_paths;
 
 void frontend_init(const char* system, const char* rom);  // after the game loaded and the panel opened
 void frontend_frame(void);       // after each refresh's core frames (the consistent point: services the companion)
+void frontend_core_frame(void);  // after each retro_run (RetroAchievements evaluate every emulated frame)
+void frontend_paused(void);      // while paused or in the menu, a few times a second
+void frontend_mmap_changed(void);
 void frontend_quit(void);        // before the core is closed
 void frontend_menu(void);        // F + X, MENU_TOGGLE
 void frontend_screenshot(void);  // F + SELECT, SCREENSHOT
@@ -20,3 +23,10 @@ void frontend_event(int ev, int arg);  // a state saved/loaded, the slot changed
 
 uint32_t* bf_frame_rgb(unsigned* w, unsigned* h);  // main.c: the last picture as XRGB8888, malloc'd
 void bf_command(const char* line);                  // main.c: one of RetroArch's command words
+void bf_commands_poll(void);                        // main.c: the command pipe read (the menu's loop calls it)
+bool bf_state_save(int slot);                       // main.c: RetroArch's slots; -1 the automatic one, -2 the menu's undo
+bool bf_state_load(int slot);
+void bf_quit(bool nosave);
+bool bf_quitting(void);
+bool bf_resume_on(void);
+const char* bf_rom(void);

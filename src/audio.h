@@ -2,6 +2,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define BF_AUDIO_RATE 48000
 
@@ -19,4 +20,6 @@ void bf_audio_set_rate(double core_rate, double core_fps, double display_hz, boo
 void bf_audio_mute(bool m);  // fast-forward, menu: the core's sound dropped
 void bf_audio_get_stats(bf_audio_stats* st, bool reset);
 double bf_audio_delay_ms(void);
+void bf_audio_pause(bool on);
+void bf_audio_raw(const int16_t* data, size_t frames);
 void bf_audio_close(void);

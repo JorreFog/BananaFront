@@ -37,6 +37,9 @@
 #include "frontend.h"
 #include "input.h"
 #include "memmap.h"
+#include "ra.h"
+
+__attribute__((weak)) bool bf_menu_run_pending(void) { return false; }
 #include "video.h"
 
 extern const char* bf_env_system_dir;
@@ -215,6 +218,7 @@ static void sram_load(void)
 // write what changed since the last write; force: also when unchanged and no file yet
 static void sram_save(bool final)
 {
+    if (getenv("BANANAFRONT_NO_SAVE_WRITE")) return;  // (tests in someone's game: their save left alone)
     for (int i = 0; i < 2; i++) {
         sram_t* s = &srams[i];
         void* mem = g_core.get_memory_data(s->id);
@@ -234,7 +238,7 @@ static void sram_save(bool final)
 
 __attribute__((weak)) void bf_thumbnail_write(const char* state_path) { (void)state_path; }
 
-static bool state_save(int s)
+bool bf_state_save(int s)
 {
     size_t n = g_core.serialize_size();
     if (!n) { bf_log("state: the core can't save states"); return false; }
@@ -255,8 +259,9 @@ static bool state_save(int s)
     return ok;
 }
 
-static bool state_load(int s)
+bool bf_state_load(int s)
 {
+    if (ra_hardcore()) { bf_log("state: no loading in hardcore"); bf_popup_push("RetroAchievements", "Hardcore: no states", 0xff7a4a, 3000); return false; }
     char p[1600];
     bf_path_state(&g_paths, s, p, sizeof p);
     size_t fs = 0, cs = 0;
@@ -266,6 +271,7 @@ static bool state_load(int s)
     free(f);
     bool ok = c && g_core.unserialize(c, cs);
     free(c);
+    if (ok) ra_state_loaded();
     bf_log("state %s: %s", ok ? "loaded" : "NOT loaded", p);
     frontend_event(ok ? BF_EV_STATE_LOADED : BF_EV_STATE_FAILED, s);
     return ok;
@@ -308,25 +314,34 @@ void bf_command(const char* line)
     const char* sp = strchr(line, ' ');
     if (sp) arg = sp + 1;
     if (!strcmp(w, "QUIT")) quit = true;
-    else if (!strcmp(w, "SAVE_STATE")) state_save(slot);
-    else if (!strcmp(w, "LOAD_STATE")) state_load(slot);
-    else if (!strcmp(w, "SAVE_STATE_SLOT")) state_save(atoi(arg));
-    else if (!strcmp(w, "LOAD_STATE_SLOT")) state_load(atoi(arg));
+    else if (!strcmp(w, "SAVE_STATE")) bf_state_save(slot);
+    else if (!strcmp(w, "LOAD_STATE")) bf_state_load(slot);
+    else if (!strcmp(w, "SAVE_STATE_SLOT")) bf_state_save(atoi(arg));
+    else if (!strcmp(w, "LOAD_STATE_SLOT")) bf_state_load(atoi(arg));
     else if (!strcmp(w, "STATE_SLOT_PLUS")) { if (slot < 999) slot++; frontend_event(BF_EV_SLOT, slot); }
     else if (!strcmp(w, "STATE_SLOT_MINUS")) { if (slot > -1) slot--; frontend_event(BF_EV_SLOT, slot); }
     else if (!strcmp(w, "FAST_FORWARD") || !strcmp(w, "FAST_FORWARD_HOLD")) ff = !ff;
     else if (!strcmp(w, "PAUSE_TOGGLE")) paused = !paused;
     else if (!strcmp(w, "MENU_TOGGLE")) frontend_menu();
     else if (!strcmp(w, "SCREENSHOT")) frontend_screenshot();
-    else if (!strcmp(w, "RESET")) g_core.reset();
+    else if (!strcmp(w, "RESET")) { g_core.reset(); ra_reset(); }
     else if (!strcmp(w, "READ_CORE_MEMORY")) read_memory(arg);
     else if (!strcmp(w, "AUDIO_REINIT")) { bf_audio_close(); bf_audio_open(A.audio_dev, A.audio_ms); }
     else if (w[0]) bf_log("command not known: %s", w);
 }
 
-static void commands_read(void)
+static void bf_commands_poll_(void);
+void bf_commands_poll(void)
 {
-    if (cmd_fd < 0) return;
+    static bool busy;  // (not re-entered: a command may run the menu, whose loop reads the pipe)
+    if (cmd_fd < 0 || busy) return;
+    busy = true;
+    bf_commands_poll_();
+    busy = false;
+}
+
+static void bf_commands_poll_(void)
+{
     for (;;) {
         ssize_t r = read(cmd_fd, cmd_buf + cmd_len, sizeof cmd_buf - 1 - cmd_len);
         if (r == 0) { cmd_fd = -1; return; }  // (EOF: /dev/null, or the writer gone)
@@ -346,13 +361,21 @@ static void commands_read(void)
     }
 }
 
+// the menu's Quit: with the automatic state when Quick resume is on (nosave: never)
+static bool quit_nosave;
+void bf_quit(bool nosave) { quit = true; quit_nosave = nosave; }
+bool bf_quitting(void) { return quit || sig_quit; }
+bool bf_resume_on(void) { return A.resume_save; }
+const char* bf_rom(void) { return A.rom; }
+const char* bf_audio_device(void) { return A.audio_dev; }
+
 // ---- hotkeys -----------------------------------------------------------------------------------------------------
 
 static void job(const char* j)
 {
     if (!strcmp(j, "ff")) ff = !ff;
-    else if (!strcmp(j, "save")) state_save(slot);
-    else if (!strcmp(j, "load")) state_load(slot);
+    else if (!strcmp(j, "save")) bf_state_save(slot);
+    else if (!strcmp(j, "load")) bf_state_load(slot);
     else if (!strcmp(j, "menu")) frontend_menu();
     else if (!strcmp(j, "pause")) paused = !paused;
     else if (!strcmp(j, "screenshot")) frontend_screenshot();
@@ -372,14 +395,15 @@ static void on_button(int id, bool down, bool f)
     // F + a button: RetroArch's hotkeys on this pad (retrogame_joypad.cfg), so hands already know them
     switch (id) {
     case RETRO_DEVICE_ID_JOYPAD_START: quit = true; break;
-    case RETRO_DEVICE_ID_JOYPAD_R: state_save(slot); break;
-    case RETRO_DEVICE_ID_JOYPAD_L: state_load(slot); break;
+    case RETRO_DEVICE_ID_JOYPAD_R: bf_state_save(slot); break;
+    case RETRO_DEVICE_ID_JOYPAD_L: bf_state_load(slot); break;
     case RETRO_DEVICE_ID_JOYPAD_R2: ff = !ff; break;
     case RETRO_DEVICE_ID_JOYPAD_X: frontend_menu(); break;
     case RETRO_DEVICE_ID_JOYPAD_Y: frontend_fps_toggle(); break;
     case RETRO_DEVICE_ID_JOYPAD_SELECT: frontend_screenshot(); break;
     case RETRO_DEVICE_ID_JOYPAD_UP: if (slot < 999) slot++; frontend_event(BF_EV_SLOT, slot); break;
     case RETRO_DEVICE_ID_JOYPAD_DOWN: if (slot > 0) slot--; frontend_event(BF_EV_SLOT, slot); break;
+    case BF_HK_ALONE: frontend_menu(); break;  // F pressed and let go alone: the menu, as in BananaDS
     default: break;
     }
 }
@@ -499,7 +523,7 @@ int main(int argc, char** argv)
     }
     reply_out = stdout;
 
-    if (A.resume_load) state_load(-1);
+    if (A.resume_load) bf_state_load(-1);
     bf_log("running: %.3f fps game on a %.3f Hz panel (%s), started in %.0f ms", fps, refresh,
            locked ? "one frame a refresh" : "time-paced", bf_now_ms() - t_start);
 
@@ -533,9 +557,11 @@ int main(int argc, char** argv)
             }
             for (int i = (vfd >= 0); i < cpos; i++)
                 if (pf[i].revents & POLLIN) bf_input_read(pf[i].fd);
-            if (cmd_fd >= 0 && cpos < n && (pf[cpos].revents & (POLLIN | POLLHUP))) commands_read();
+            if (cmd_fd >= 0 && cpos < n && (pf[cpos].revents & (POLLIN | POLLHUP))) bf_commands_poll();
         }
-        if (paused || bf_video_flip_pending() || !want_frame) continue;
+        if (bf_menu_run_pending()) want_frame = true;  // (the menu took the flip events while it was open)
+        if (paused) { frontend_paused(); continue; }
+        if (bf_video_flip_pending() || !want_frame) continue;
 
         // the frame(s) for this refresh
         int nrun = 1;
@@ -544,6 +570,7 @@ int main(int argc, char** argv)
             nrun = (int)acc;
             acc -= nrun;
         }
+        if (ff && ra_hardcore()) ff = false;  // (hardcore: no fast-forward)
         bf_env_fastforward = ff;
         bf_audio_mute(ff);
         frame_new = frame_dupe = false;
@@ -552,9 +579,9 @@ int main(int argc, char** argv)
             // as many frames as fit in most of a refresh (the last one shown)
             const double budget = 1000.0 / refresh * 0.8;
             nrun = 0;
-            do { g_core.run(); nrun++; } while (bf_now_ms() - t0 < budget && nrun < 16);
+            do { g_core.run(); frontend_core_frame(); nrun++; } while (bf_now_ms() - t0 < budget && nrun < 16);
         } else
-            for (int i = 0; i < nrun; i++) g_core.run();
+            for (int i = 0; i < nrun; i++) { g_core.run(); frontend_core_frame(); }
         const double t1 = bf_now_ms();
         frames_run += nrun;
         S.frames += nrun;
@@ -575,7 +602,7 @@ int main(int argc, char** argv)
         if (A.frames && (long)frames_run >= A.frames) quit = true;
     }
     stats_line(true);
-    if (A.resume_save || sig_state) state_save(-1);
+    if ((A.resume_save && !quit_nosave) || sig_state) bf_state_save(-1);
     sram_save(true);
     frontend_quit();
     bf_input_close();

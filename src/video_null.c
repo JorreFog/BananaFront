@@ -76,3 +76,25 @@ void bf_video_close(void)
     if (tfd >= 0) close(tfd);
     free(buf);
 }
+
+static uint32_t* cv[2];
+int bf_video_canvas(uint32_t** px, int* pitch, int* w, int* h)
+{
+    static int k;
+    k ^= 1;
+    if (!cv[k]) cv[k] = calloc(640 * 480, 4);
+    *px = cv[k]; *pitch = 640 * 4; *w = 640; *h = 480;
+    return k;
+}
+void bf_video_canvas_show(int k)
+{
+    // (tests: the menu's picture written out when asked)
+    const char* d = getenv("BANANAFRONT_NULL_CANVAS");
+    if (!d) return;
+    FILE* f = fopen(d, "wb");
+    if (!f) return;
+    fprintf(f, "P6 640 480 255\n");
+    for (int i = 0; i < 640 * 480; i++) { uint32_t p = cv[k][i]; fputc(p >> 16, f); fputc(p >> 8, f); fputc(p, f); }
+    fclose(f);
+}
+void bf_video_canvas_done(void) {}

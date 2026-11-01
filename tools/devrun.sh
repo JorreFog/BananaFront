@@ -10,6 +10,7 @@
 #   name is there; removed afterwards. Its save/state files are left (they're the run's data: copied back).
 # - Collects: bananafront's log + its stats lines (fps, vblank, run ms avg/p50/p99, cpu %, audio underruns/fill/ratio)
 #   every 10 s, the game-id file; quits through the game panel's pipe (QUIT); everything undone.
+# MID='<bash commands>': run on the PC half-way (DEV and OUT set), e.g. to open the menu and take a picture.
 # Results: ~/bf-runs/<rom>/<date>-<dev>-<tag>/  (bananafront.log, stats.txt, game-id, saves)
 set -u
 DEV=$1 SYS=$2 CORE=$3 ROM=$4 SEC=$5 TAG=${6:-run}
@@ -46,7 +47,7 @@ UIARG=; [ -f "$BF_UI" ] && UIARG="$BF_UI=/usr/bin/banana-ui"
 $DS/deploy.sh "$DEV" --restart ui "$K/systems.conf=/etc/banana/systems.conf" $UIARG || exit 1
 sleep 6
 dev "echo '$DROM' > /run/banana/launch; for i in \$(seq 40); do pidof bananafront >/dev/null && break; sleep 0.5; done; pidof bananafront || echo 'bananafront did not start'"
-sleep "$SEC"
+if [ -n "${MID:-}" ]; then sleep $((SEC / 2)); DEV=$DEV OUT=$OUT bash -c "$MID"; sleep $((SEC - SEC / 2)); else sleep "$SEC"; fi
 dev 'cat /run/banana/game-id' > "$OUT/game-id" 2>/dev/null
 dev 'echo QUIT > /run/banana/retroarch.cmd; for i in $(seq 20); do pidof bananafront >/dev/null || break; sleep 0.5; done; pidof bananafront && kill $(pidof bananafront)'
 sleep 1

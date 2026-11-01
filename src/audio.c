@@ -109,6 +109,27 @@ size_t bf_audio_batch(const int16_t* data, size_t frames)
     return frames;
 }
 
+// the menu: the game's sound stopped (what's queued dropped), the device free for the menu's own sounds
+void bf_audio_pause(bool on)
+{
+    if (!pcm) return;
+    if (on) { snd_pcm_drop(pcm); snd_pcm_prepare(pcm); }
+    else {
+        snd_pcm_drop(pcm);
+        snd_pcm_prepare(pcm);
+        write_silence(buf_frames / 2);  // (the fill DRC aims for)
+        bf_resampler_reset(&rs);
+    }
+}
+
+// 48 kHz stereo frames straight to the device (the menu's sounds); what doesn't fit is dropped
+void bf_audio_raw(const int16_t* data, size_t frames)
+{
+    if (!pcm) return;
+    snd_pcm_sframes_t w = snd_pcm_writei(pcm, data, frames);
+    if (w == -EPIPE) { snd_pcm_prepare(pcm); snd_pcm_writei(pcm, data, frames); }
+}
+
 void bf_audio_get_stats(bf_audio_stats* out, bool reset)
 {
     *out = st;

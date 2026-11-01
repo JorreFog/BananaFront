@@ -7,11 +7,17 @@ BOARD ?= rgds-plus
 VERSION := $(shell git describe --always --dirty 2>/dev/null || echo dev)
 
 SRC_COMMON := src/main.c src/core.c src/util.c src/resample.c src/statefile.c src/unzip.c src/memmap.c src/input.c \
-	src/frontend.c src/third_party/bcomp/bcomp.c src/third_party/rcheevos/src/rhash/md5.c
+	src/frontend.c src/ra.c src/menu.c src/menu_host.c src/lang.c src/third_party/bcomp/bcomp.c
 SRC_DEVICE := $(SRC_COMMON) src/kms.c src/audio.c
 SRC_HOST := $(SRC_COMMON) src/video_null.c src/audio_null.c
 WARN := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation
-DEFS := -DBF_VERSION=\"$(VERSION)\"
+MENU_WARN := -Wno-misleading-indentation -Wno-unused-function -Wno-unused-variable -Wno-unused-const-variable
+DEFS := -DBF_VERSION=\"$(VERSION)\" -DRC_CLIENT_SUPPORTS_HASH -DRC_DISABLE_LUA
+RC := src/third_party/rcheevos
+RC_SRC := $(RC)/src/rc_client.c $(RC)/src/rc_compat.c $(RC)/src/rc_util.c $(RC)/src/rc_version.c \
+	$(RC)/src/rc_libretro.c $(wildcard $(RC)/src/rcheevos/*.c) $(wildcard $(RC)/src/rapi/*.c) \
+	$(wildcard $(RC)/src/rhash/*.c)
+RC_FLAGS := -Isrc -I$(RC)/include -DRC_DISABLE_LUA -DRC_CLIENT_SUPPORTS_HASH -w
 
 all: device
 
@@ -19,21 +25,33 @@ include $(HOME)/banana-emu/common/a55.mk
 
 OUT := build/$(BOARD)
 device: $(OUT)/bananafront
-$(OUT)/bananafront: $(SRC_DEVICE) src/*.h Makefile
+# rcheevos once per board (its own flags, warnings off: upstream code)
+$(OUT)/rc/%.o: $(RC)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(A55_CFLAGS) $(RC_FLAGS) -c -o $@ $<
+$(OUT)/librc.a: $(patsubst $(RC)/src/%.c,$(OUT)/rc/%.o,$(RC_SRC))
+	$(AR) rcs $@ $^
+$(OUT)/bananafront: $(SRC_DEVICE) src/*.h Makefile $(OUT)/librc.a
 	@mkdir -p $(OUT)
-	$(CC) $(A55_CFLAGS) $(A55_DRM_CFLAGS) -std=gnu11 $(WARN) $(DEFS) -o $@ $(SRC_DEVICE) $(A55_LDFLAGS) \
-		-ldrm -lasound -lz -lm -ldl -lpthread
+	$(CC) $(A55_CFLAGS) $(A55_DRM_CFLAGS) -Isrc -I$(RC)/include -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ $(SRC_DEVICE) $(OUT)/librc.a \
+		$(A55_LDFLAGS) -ldrm -lasound -lz -lm -ldl -lpthread
 	@ls -la $@
 
 HOSTCC ?= cc
 host: build/host/bananafront
-build/host/bananafront: $(SRC_HOST) src/*.h Makefile
+build/host/rc/%.o: $(RC)/src/%.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -O1 -g $(RC_FLAGS) -c -o $@ $<
+build/host/librc.a: $(patsubst $(RC)/src/%.c,build/host/rc/%.o,$(RC_SRC))
+	ar rcs $@ $^
+build/host/bananafront: $(SRC_HOST) src/*.h Makefile build/host/librc.a
 	@mkdir -p build/host
-	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(DEFS) -o $@ $(SRC_HOST) -lz -lm -ldl
+	$(HOSTCC) -O1 -g -fsanitize=address,undefined -Isrc -I$(RC)/include -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ $(SRC_HOST) \
+		build/host/librc.a -lz -lm -ldl -lpthread
 
 build/host/test_unit: tests/test_unit.c src/util.c src/resample.c src/statefile.c src/*.h
 	@mkdir -p build/host
-	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(DEFS) -o $@ tests/test_unit.c src/util.c \
+	$(HOSTCC) -O1 -g -fsanitize=address,undefined -std=gnu11 $(WARN) $(MENU_WARN) $(DEFS) -o $@ tests/test_unit.c src/util.c \
 		src/resample.c src/statefile.c -lz -lm
 test: build/host/test_unit
 	./build/host/test_unit

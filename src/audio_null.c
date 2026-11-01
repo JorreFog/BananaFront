@@ -25,3 +25,5 @@ void bf_audio_close(void)
     if (samples) bf_log("audio: none (null driver), %llu frames, hash %016llx", (unsigned long long)samples, (unsigned long long)hash);
     samples = 0;
 }
+void bf_audio_pause(bool on) { (void)on; }
+void bf_audio_raw(const int16_t* data, size_t frames) { (void)data; (void)frames; }

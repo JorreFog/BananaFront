@@ -16,6 +16,8 @@
 #include "bf.h"
 #include "frontend.h"
 #include "memmap.h"
+#include "ra.h"
+#include "third_party/rcheevos/include/rc_hash.h"
 #include "third_party/bcomp/bcomp.h"
 #include "third_party/bcomp/bcomp_libretro.h"
 #include "third_party/rcheevos/src/rhash/md5.h"
@@ -45,6 +47,7 @@ static bcomp_producer comp;
 static bool comp_on;
 static uint64_t comp_frames;
 static const char* GAME_ID = "/run/banana/game-id";
+static time_t started;
 
 // the system's RAM where its companion map places it, for a core that gives no memory maps (systems/<id>.json)
 static uint32_t fallback_ram_start(const char* s)
@@ -64,33 +67,61 @@ static uint32_t fallback_sram_start(const char* s)
 }
 static uint32_t mem_size(unsigned id) { return (uint32_t)g_core.get_memory_size(id); }
 
-static void write_game_id(const char* rom)
+static char gid_rom[1100], ra_hash_s[40], ra_title_s[256];
+static unsigned ra_id;
+static char crc_s[16], md5_s[40];
+static size_t rom_n;
+
+static void write_game_id(const char* rom);
+void frontend_ra_game(unsigned id, const char* title)
+{
+    ra_id = id;
+    snprintf(ra_title_s, sizeof ra_title_s, "%s", title ? title : "");
+    write_game_id(NULL);
+}
+
+static void hash_content(void)
 {
     // the hashes of the content the core runs (a zip's member, not the zip)
     const void* d = g_core.rom_data;
     size_t n = g_core.rom_size;
     void* own = NULL;
     if (!d) { own = bf_read_file(g_core.rom_path, &n); d = own; }
-    char crc[16] = "", md5s[40] = "";
+    char* crc = crc_s;
+    char* md5s = md5_s;
+    rom_n = n;
     if (d) {
-        snprintf(crc, sizeof crc, "%08lx", crc32(0, d, (uInt)n));
+        snprintf(crc, sizeof crc_s, "%08lx", crc32(0, d, (uInt)n));
         md5_state_t m;
         md5_byte_t dig[16];
         md5_init(&m);
         md5_append(&m, d, (int)n);
         md5_finish(&m, dig);
         for (int i = 0; i < 16; i++) sprintf(md5s + i * 2, "%02x", dig[i]);
+        // rcheevos' hash for the system (header rules differ per system: NES skips iNES, SNES a copier header...)
+        extern uint32_t ra_console_of(const char* system);
+        uint32_t con = ra_console_of(sys_id);
+        if (con && !rc_hash_generate_from_buffer(ra_hash_s, con, d, n)) ra_hash_s[0] = 0;
     }
     free(own);
+}
+
+static void write_game_id(const char* rom)
+{
+    if (rom) snprintf(gid_rom, sizeof gid_rom, "%s", rom);
+    rom = gid_rom;
+    const size_t n = rom_n;
+    const char* crc = crc_s;
+    const char* md5s = md5_s;
     const char* member = strcmp(g_core.rom_path, rom) ? strrchr(g_core.rom_path, '/') : NULL;
     char b[4096];
     int o = snprintf(b, sizeof b,
                      "version=1\nsystem=%s\ncore=%s %s\nfrontend=BananaFront %s\npid=%d\nrom=%s\nrom_member=%s\n"
-                     "rom_base=%s\nrom_size=%zu\ncrc32=%s\nmd5=%s\nsave_dir=%s\nstate_dir=%s\nscreenshot_dir=%s\n"
-                     "started=%ld\n",
+                     "rom_base=%s\nrom_size=%zu\ncrc32=%s\nmd5=%s\nra_hash=%s\nra_game_id=%u\nra_title=%s\nsave_dir=%s\n"
+                     "state_dir=%s\nscreenshot_dir=%s\nstarted=%ld\n",
                      sys_id, g_core.sys.library_name, g_core.sys.library_version, BF_VERSION, (int)getpid(), rom,
-                     member ? member + 1 : "", g_paths.game, n, crc, md5s, g_paths.save_dir, g_paths.state_dir,
-                     g_paths.shot_dir, (long)time(NULL));
+                     member ? member + 1 : "", g_paths.game, n, crc, md5s, ra_hash_s, ra_id, ra_title_s, g_paths.save_dir,
+                     g_paths.state_dir, g_paths.shot_dir, (long)started);
     (void)o;
     char tmp[64];
     snprintf(tmp, sizeof tmp, "%s.tmp", GAME_ID);
@@ -119,6 +150,8 @@ static void comp_regions(void)
 void frontend_init(const char* system, const char* rom)
 {
     sys_id = system ? system : "";
+    started = time(NULL);
+    hash_content();
     write_game_id(rom);
     comp_on = bcomp_attach(&comp, NULL) == 0;
     if (comp_on) {
@@ -128,6 +161,20 @@ void frontend_init(const char* system, const char* rom)
         comp_regions();
         bcomp_set_state(&comp, 2, (uint32_t)(bf_core_fps() * 100));
     }
+    ra_init(sys_id, comp_on ? &comp : NULL);
+}
+
+void frontend_core_frame(void) { ra_frame(); }
+void frontend_paused(void)
+{
+    ra_idle();
+    if (comp_on) bcomp_service(&comp, comp_frames);
+}
+
+void frontend_mmap_changed(void)
+{
+    if (comp_on) comp_regions();
+    ra_memory_changed();
 }
 
 void frontend_frame(void)
@@ -138,6 +185,7 @@ void frontend_frame(void)
 
 void frontend_quit(void)
 {
+    ra_quit();
     if (comp_on) { bcomp_set_state(&comp, 4, 0); bcomp_detach(&comp); }
     unlink(GAME_ID);
 }

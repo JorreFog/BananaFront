@@ -31,6 +31,8 @@ typedef struct {
 } buf_t;
 
 static struct {
+    buf_t canvas[2];   // the menu: panel-sized XRGB8888, on the primary plane while the menu is open
+    int canvas_shown;
     int fd;
     bool leased;
     uint32_t conn, crtc, plane, mode_blob;
@@ -47,7 +49,7 @@ static struct {
     uint8_t* cpu_src;  // !hw: the core's picture, scaled into the buffer at commit
     int cpu_pitch;
     double last_flip;
-} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1 };
+} K = { .fd = -1, .shown = -1, .pending = -1, .drawing = -1, .canvas_shown = -1 };
 
 static uint32_t prop(uint32_t obj, uint32_t type, const char* name)
 {
@@ -277,11 +279,7 @@ static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
     if (K.b[0].fb && K.b[0].fmt == f && ((K.hw && K.b[0].w >= w && K.b[0].h >= h) || (!K.hw && K.core_fmt == core_fmt)))
         return true;
     // the flip pending must finish before its buffer goes
-    while (K.pending >= 0) {
-        drmEventContext ev = { .version = 2 };
-        (void)ev;
-        bf_video_events();
-    }
+    while (K.pending >= 0) bf_video_events();
     for (int i = 0; i < NBUF; i++) freebuf(&K.b[i]);
     K.shown = K.drawing = -1;
     K.core_fmt = core_fmt;
@@ -404,12 +402,63 @@ int bf_video_size(int* w, int* h)
 
 uint32_t* bf_video_grab(int* w, int* h) { (void)w; (void)h; return NULL; }
 
+// ---- the menu's canvas: the primary plane shows a panel-sized XRGB8888 buffer instead of the game while it's open
+// (no scaling, no second plane needed: the lease has only the primary); the next game commit puts the game back
+int bf_video_canvas(uint32_t** px, int* pitch, int* w, int* h)
+{
+    if (K.fd < 0) return -1;
+    while (K.pending >= 0) bf_video_events();
+    for (int i = 0; i < 2; i++)
+        if (!K.canvas[i].fb && !mkbuf(&K.canvas[i], K.mode.hdisplay, K.mode.vdisplay, DRM_FORMAT_XRGB8888)) return -1;
+    const int k = K.canvas_shown == 0 ? 1 : 0;
+    *px = K.canvas[k].map;
+    *pitch = (int)K.canvas[k].pitch;
+    *w = K.mode.hdisplay;
+    *h = K.mode.vdisplay;
+    return k;
+}
+
+void bf_video_canvas_show(int k)
+{
+    if (K.fd < 0 || k < 0 || k > 1 || !K.canvas[k].fb) return;
+    while (K.pending >= 0) bf_video_events();
+    drmModeAtomicReq* r = drmModeAtomicAlloc();
+    const buf_t* b = &K.canvas[k];
+    drmModeAtomicAddProperty(r, K.plane, K.p_fb, b->fb);
+    drmModeAtomicAddProperty(r, K.plane, K.p_crtc, K.crtc);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sx, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sy, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sw, (uint64_t)b->w << 16);
+    drmModeAtomicAddProperty(r, K.plane, K.p_sh, (uint64_t)b->h << 16);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cx, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cy, 0);
+    drmModeAtomicAddProperty(r, K.plane, K.p_cw, b->w);
+    drmModeAtomicAddProperty(r, K.plane, K.p_ch, b->h);
+    // (blocking: the menu draws at its own pace, and the buffer it gets next is the one not on the panel)
+    if (drmModeAtomicCommit(K.fd, r, 0, NULL) == 0) K.canvas_shown = k;
+    drmModeAtomicFree(r);
+}
+
+// the menu closed: the game's last picture back (and its buffers' sizes as before)
+void bf_video_canvas_done(void)
+{
+    if (K.fd < 0) return;
+    if (K.shown >= 0) {
+        drmModeAtomicReq* r = drmModeAtomicAlloc();
+        add_plane(r, &K.b[K.shown], K.src_w, K.src_h);
+        drmModeAtomicCommit(K.fd, r, 0, NULL);
+        drmModeAtomicFree(r);
+    }
+    K.canvas_shown = -1;
+}
+
 void bf_video_close(void)
 {
     if (K.fd < 0) return;
     while (K.pending >= 0) bf_video_events();
     // (the buffers go with the fd; closing it ends master or hands the lease back to banana-ui, which draws again)
     for (int i = 0; i < NBUF; i++) freebuf(&K.b[i]);
+    for (int i = 0; i < 2; i++) freebuf(&K.canvas[i]);
     free(K.cpu_src);
     close(K.fd);
     K.fd = -1;

@@ -33,6 +33,31 @@ static int hat_x, hat_y;
 static bool hotkey_down, hotkey_used;
 static bf_input_hotkey_fn on_hotkey;
 static uint32_t job_mask;
+// the menu's mode: every key (and the hat as d-pad keys) queued raw instead of going to the game and the hotkeys
+static bool raw_mode;
+static struct { int code, value; } rawq[64];
+static int raw_head, raw_n;
+static void raw_push(int code, int value)
+{
+    if (raw_n == 64) { raw_head = (raw_head + 1) % 64; raw_n--; }
+    rawq[(raw_head + raw_n++) % 64].code = code;
+    rawq[(raw_head + raw_n - 1) % 64].value = value;
+}
+void bf_input_raw(bool on)
+{
+    raw_mode = on;
+    raw_n = 0;
+    if (!on) { buttons = 0; hotkey_down = false; }  // (what was held in the menu doesn't carry into the game)
+}
+bool bf_input_raw_take(int* code, int* value)
+{
+    if (!raw_n) return false;
+    *code = rawq[raw_head].code;
+    *value = rawq[raw_head].value;
+    raw_head = (raw_head + 1) % 64;
+    raw_n--;
+    return true;
+}
 
 void bf_input_set_job_mask(uint32_t mask) { job_mask = mask; }
 
@@ -134,6 +159,7 @@ static void set_button(int id, bool down)
 static void key_event(int code, int value)
 {
     if (value == 2) return;  // (autorepeat)
+    if (raw_mode) { raw_push(code, value); return; }
     const bool down = value != 0;
     if (is_hotkey(code)) {
         hotkey_down = down;
@@ -168,7 +194,15 @@ void bf_input_read(int fd)
                 const struct input_event* e = &ev[k];
                 if (e->type == EV_KEY) key_event(e->code, e->value);
                 else if (e->type == EV_ABS && e->code < 0x40 && d->has_abs[e->code]) {
-                    if (e->code == ABS_HAT0X || e->code == ABS_HAT0Y) {
+                    if (raw_mode && (e->code == ABS_HAT0X || e->code == ABS_HAT0Y)) {
+                        int* h = e->code == ABS_HAT0X ? &hat_x : &hat_y;
+                        const int neg = e->code == ABS_HAT0X ? BTN_DPAD_LEFT : BTN_DPAD_UP, pos = e->code == ABS_HAT0X ? BTN_DPAD_RIGHT : BTN_DPAD_DOWN;
+                        if (*h < 0) raw_push(neg, 0);
+                        if (*h > 0) raw_push(pos, 0);
+                        if (e->value < 0) raw_push(neg, 1);
+                        if (e->value > 0) raw_push(pos, 1);
+                        *h = e->value;
+                    } else if (e->code == ABS_HAT0X || e->code == ABS_HAT0Y) {
                         int* h = e->code == ABS_HAT0X ? &hat_x : &hat_y;
                         const int neg = e->code == ABS_HAT0X ? RETRO_DEVICE_ID_JOYPAD_LEFT : RETRO_DEVICE_ID_JOYPAD_UP;
                         const int pos = e->code == ABS_HAT0X ? RETRO_DEVICE_ID_JOYPAD_RIGHT : RETRO_DEVICE_ID_JOYPAD_DOWN;

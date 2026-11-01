@@ -26,4 +26,8 @@ int bf_video_size(int* w, int* h);  // the panel
 // the last frame shown, as XRGB8888 (for thumbnails, screenshots): malloc'd, w x h; NULL if none
 uint32_t* bf_video_grab(int* w, int* h);
 double bf_video_last_flip_ms(void);  // when the last flip happened (bf_now_ms clock)
+// the in-game menu's canvas (a panel-sized XRGB8888 buffer on the panel instead of the game; -1 none)
+int bf_video_canvas(uint32_t** px, int* pitch, int* w, int* h);
+void bf_video_canvas_show(int k);
+void bf_video_canvas_done(void);  // the game's picture back
 void bf_video_close(void);

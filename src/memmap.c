@@ -124,7 +124,10 @@ const char* bf_mmap_err(int err)
 }
 
 // the core sent new maps (after the game loaded): RetroArch preprocesses them again too
+__attribute__((weak)) void frontend_mmap_changed(void) {}
 void bf_mmap_changed(void)
 {
-    if (pp) bf_mmap_refresh();
+    if (!pp) return;  // (before the game loaded: main refreshes after the load)
+    bf_mmap_refresh();
+    frontend_mmap_changed();
 }

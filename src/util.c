@@ -140,7 +140,8 @@ void bf_path_save(const bf_paths* p, const char* ext, char* out, size_t n)
 
 void bf_path_state(const bf_paths* p, int slot, char* out, size_t n)
 {
-    if (slot < 0) snprintf(out, n, "%s/%s.state.auto", p->state_dir, p->game);
+    if (slot == -2) snprintf(out, n, "%s/%s.state.undo", p->state_dir, p->game);  // (the menu's undo of a load)
+    else if (slot < 0) snprintf(out, n, "%s/%s.state.auto", p->state_dir, p->game);
     else if (slot == 0) snprintf(out, n, "%s/%s.state", p->state_dir, p->game);
     else snprintf(out, n, "%s/%s.state%d", p->state_dir, p->game, slot);
 }
