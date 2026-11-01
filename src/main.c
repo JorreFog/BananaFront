@@ -539,9 +539,10 @@ static void load_jobs(void)
     hotkeys_on = true;
     char hk[16] = "";
     if (bf_conf_file_get("/data/banana/settings.conf", "ra_hotkeys", hk, sizeof hk) && !strcmp(hk, "off")) hotkeys_on = false;
-    // Settings > Other systems > Buttons (PR #151): L2, R2, L3, R3 alone. Defaults: R2 fast-forward, the rest the game's
+    // Settings > Other systems > Buttons (PR #151): L2, R2, L3, R3 alone, as settings.conf (its template: R2 fast-forward)
+    // has them; a card and image without those lines (before #151): every button the game's, as in RetroArch
     static const struct { const char* key; int id; const char* def; } B[] = {
-        { "ra_btn_l2", RETRO_DEVICE_ID_JOYPAD_L2, "game" }, { "ra_btn_r2", RETRO_DEVICE_ID_JOYPAD_R2, "ff" },
+        { "ra_btn_l2", RETRO_DEVICE_ID_JOYPAD_L2, "game" }, { "ra_btn_r2", RETRO_DEVICE_ID_JOYPAD_R2, "game" },
         { "ra_btn_l3", RETRO_DEVICE_ID_JOYPAD_L3, "game" }, { "ra_btn_r3", RETRO_DEVICE_ID_JOYPAD_R3, "game" } };
     for (unsigned i = 0; i < 4; i++) {
         char v[32] = "";
