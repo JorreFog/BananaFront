@@ -40,6 +40,7 @@
 
 #include "audio.h"
 #include "cpugov.h"
+#include "gpufloor.h"
 #include "bf.h"
 #include "frontend.h"
 #include "input.h"
@@ -692,6 +693,7 @@ int main(int argc, char** argv)
     if (getenv("BANANAFRONT_LOWLAT") && atoi(getenv("BANANAFRONT_LOWLAT"))) A.lowlat = true;
     if (A.cpugov || (getenv("BANANAFRONT_CPUGOV") && atoi(getenv("BANANAFRONT_CPUGOV")))) bf_cpugov_start(g_paths.game, refresh);
     else if (!getenv("BANANAFRONT_FLOOR") || atoi(getenv("BANANAFRONT_FLOOR"))) bf_cpugov_start_floor(refresh);  // (the default)
+
     load_jobs();
     frontend_init(A.system, A.rom);
     if (A.border && A.brect[2] > 0) frontend_border(A.border, A.brect[0], A.brect[1], A.brect[2], A.brect[3]);
@@ -715,6 +717,7 @@ int main(int argc, char** argv)
     double ll_budget = 1000.0 / refresh;  // --lowlat: how long before the next refresh a frame starts
     int owed = 0;  // frames a slow refresh left behind, run in the next one (or between refreshes)
     double owed_since = 0;
+    int last_frame_late = 0;  // (the last frame missed its refresh itself: not the GPU's doing)
     double last_frame_ms = 1000.0 / refresh;  // a core frame's time, smoothed
     bool want_frame = true;
     while (!quit && !sig_quit) {
@@ -762,6 +765,10 @@ int main(int argc, char** argv)
                     if (ll_budget > 1000.0 / refresh - 1.0) ll_budget = 1000.0 / refresh - 1.0;
                     S.missed++;
                 }
+                // a flip a refresh late while the frame itself was on time, with a shader: the GPU's pass
+                if (!ff && last_frame_late == 0 && bf_video_shader_name()[0] && S.flip_prev > 0 &&
+                    t - S.flip_prev > 1500.0 / refresh && t - S.flip_prev < 100)
+                    bf_gpufloor_missed();
                 S.flip_prev = t;
                 S.vblanks++;
                 want_frame = true;
@@ -834,6 +841,7 @@ int main(int argc, char** argv)
         const double since_flip = t1 - bf_video_last_flip_ms();
         const bool late = since_flip > 1000.0 / refresh && since_flip < 100;
         if (late) S.late++;
+        last_frame_late = late;
         // the input's age when the picture starts to show: from the read to the next refresh
         if (bf_video_last_flip_ms() > 0) {
             S.lat_sum += bf_video_last_flip_ms() + 1000.0 / refresh * (late ? 2 : 1) - input_at;
@@ -852,6 +860,14 @@ int main(int argc, char** argv)
         if (!ff) bf_cpugov_frame(t1 - t0, late);
         if (frames_run % 6 == 0) sample_clock();
         bf_cpugov_tick();
+        {
+            // (the GPU's floor follows the shader: Quick settings can switch it on or off while playing)
+            static bool gf_no = false;
+            const bool want = bf_video_shader_name()[0] && !gf_no && (!getenv("BANANAFRONT_GPUFLOOR") || atoi(getenv("BANANAFRONT_GPUFLOOR")));
+            if (want && !bf_gpufloor_mhz()) gf_no = !bf_gpufloor_start();
+            else if (!bf_video_shader_name()[0] && bf_gpufloor_mhz()) bf_gpufloor_stop();
+            bf_gpufloor_tick();
+        }
         const double tf = bf_now_ms();
         bf_audio_flush();
         frontend_frame();
@@ -879,6 +895,7 @@ int main(int argc, char** argv)
     for (int i = 0; i < 1000 && __atomic_load_n(&writes_in_flight, __ATOMIC_ACQUIRE) > 0; i++) usleep(10000);
     frontend_quit();
     bf_cpugov_stop();
+    bf_gpufloor_stop();
     bf_input_close();
     bf_audio_close();
     bf_video_close();
