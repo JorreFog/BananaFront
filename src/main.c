@@ -743,6 +743,7 @@ int main(int argc, char** argv)
         if (!ff) bf_cpugov_frame(t1 - t0, late);
         bf_cpugov_tick();
         const double tf = bf_now_ms();
+        bf_audio_flush();
         frontend_frame();
         if (g_core.av_changed) {
             g_core.av_changed = false;

@@ -15,9 +15,10 @@ static snd_pcm_t* pcm;
 static snd_pcm_uframes_t buf_frames, period_frames;
 static bf_resampler rs;
 static double base_ratio = 1.0, cur_ratio = 1.0, drc_delta = 0.005;
-static int16_t* tmp;
-static size_t tmp_cap;
 static bool muted;
+static int16_t* acc;   // this refresh's sound, resampled, waiting for bf_audio_flush
+static size_t acc_n, acc_cap;
+static unsigned calls;
 static bf_audio_stats st;
 
 bool bf_audio_open(const char* device, int latency_ms)
@@ -64,7 +65,7 @@ void bf_audio_set_rate(double core_rate, double core_fps, double display_hz, boo
     cur_ratio = base_ratio;
 }
 
-void bf_audio_mute(bool m) { muted = m; }
+void bf_audio_mute(bool m) { muted = m; if (m) acc_n = 0; }
 
 static void write_silence(snd_pcm_uframes_t n)
 {
@@ -86,9 +87,23 @@ size_t bf_audio_batch(const int16_t* data, size_t frames)
     audio_ms += bf_now_ms() - t;
     return r;
 }
+// the core's sound of a frame is resampled as it comes and written to the device once per refresh
+// (bf_audio_flush): cores call the batch callback several times a frame, and each write is a trip through
+// ALSA's plugin chain and the kernel
 static size_t audio_batch_(const int16_t* data, size_t frames)
 {
     if (!pcm || muted || !frames) return frames;
+    calls++;
+    const size_t want = (size_t)(frames * cur_ratio) + 8;
+    if (acc_n + want > acc_cap) { acc_cap = (acc_n + want) * 2; acc = realloc(acc, acc_cap * 4); }
+    acc_n += bf_resample(&rs, data, frames, acc + acc_n * 2, want, cur_ratio);
+    return frames;
+}
+
+void bf_audio_flush(void)
+{
+    const double t0 = bf_now_ms();
+    if (!pcm || !acc_n) { acc_n = 0; return; }
     snd_pcm_sframes_t avail = snd_pcm_avail(pcm);
     if (avail < 0) {
         if (avail == -EPIPE) st.underruns++;
@@ -97,26 +112,25 @@ static size_t audio_batch_(const int16_t* data, size_t frames)
         // half a buffer of silence: the fill DRC aims for, so it doesn't have to climb back from empty
         write_silence(buf_frames / 2);
         avail = snd_pcm_avail(pcm);
-        if (avail < 0) return frames;
+        if (avail < 0) { acc_n = 0; return; }
     }
+    // the ratio for the next frame's sound, from how full the device is before this frame's goes in
     const double fill = 1.0 - (double)avail / buf_frames;
     cur_ratio = bf_drc_ratio(base_ratio, fill, drc_delta);
     st.fill_sum += fill;
     st.fill_n++;
-    const size_t want = (size_t)(frames * cur_ratio) + 8;
-    if (want > tmp_cap) { tmp_cap = want * 2; tmp = realloc(tmp, tmp_cap * 4); }
-    const size_t n = bf_resample(&rs, data, frames, tmp, want, cur_ratio);
-    snd_pcm_sframes_t w = snd_pcm_writei(pcm, tmp, n);
+    snd_pcm_sframes_t w = snd_pcm_writei(pcm, acc, acc_n);
     if (w == -EPIPE) {
         st.underruns++;
         snd_pcm_prepare(pcm);
         write_silence(buf_frames / 2);
-        w = snd_pcm_writei(pcm, tmp, n);
+        w = snd_pcm_writei(pcm, acc, acc_n);
     }
-    if (w >= 0 && (size_t)w < n) st.dropped += n - (size_t)w;  // (full: only if the core runs far ahead)
-    else if (w == -EAGAIN) st.dropped += n;
+    if (w >= 0 && (size_t)w < acc_n) st.dropped += acc_n - (size_t)w;  // (full: only if the core runs far ahead)
+    else if (w == -EAGAIN) st.dropped += acc_n;
     st.written += w > 0 ? (size_t)w : 0;
-    return frames;
+    acc_n = 0;
+    audio_ms += bf_now_ms() - t0;
 }
 
 // the menu: the game's sound stopped (what's queued dropped), the device free for the menu's own sounds
@@ -162,7 +176,7 @@ void bf_audio_close(void)
     snd_pcm_drop(pcm);
     snd_pcm_close(pcm);
     pcm = NULL;
-    free(tmp);
-    tmp = NULL;
-    tmp_cap = 0;
+    free(acc);
+    acc = NULL;
+    acc_cap = acc_n = 0;
 }
