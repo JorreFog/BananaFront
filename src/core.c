@@ -391,7 +391,7 @@ bool bf_core_load_game(const char* rom)
     gi.size = g_core.rom_size;
     if (!g_core.load_game(&gi)) { bf_log("the core didn't load %s", rom); return false; }
     g_core.get_system_av_info(&g_core.av);
-    g_core.set_controller_port_device(0, RETRO_DEVICE_JOYPAD);
+    for (unsigned p = 0; p < 4; p++) g_core.set_controller_port_device(p, RETRO_DEVICE_JOYPAD);
     bf_log("game: %ux%u (max %ux%u, aspect %.3f), %.3f fps, %.0f Hz sound, pixel format %d", g_core.av.geometry.base_width,
            g_core.av.geometry.base_height, g_core.av.geometry.max_width, g_core.av.geometry.max_height,
            g_core.av.geometry.aspect_ratio, g_core.av.timing.fps, g_core.av.timing.sample_rate, g_core.fmt);

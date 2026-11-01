@@ -22,13 +22,17 @@ typedef struct {
     char name[128];
     struct input_absinfo ax[ABS_CNT > 0x40 ? 0x40 : ABS_CNT];
     bool has_abs[0x40];
+    int port;  // the player: the handheld's own pad (and keyboards) 0, other pads 1-3 in the order they were found
 } dev_t_;
 static dev_t_ devs[MAXDEV];
 static int ndevs;
 
-static uint32_t buttons;       // RETRO_DEVICE_ID_JOYPAD_* bits, as the pad has them
-static uint32_t game_buttons;  // what the game sees (minus what F holds back)
-static int16_t axes[4];        // left x/y, right x/y (-32768..32767)
+#define NPORT 4
+static uint32_t pbuttons[NPORT];   // RETRO_DEVICE_ID_JOYPAD_* bits per player, as the pads have them
+static uint32_t game_buttons[NPORT];  // what the game sees (player 1 minus what F and the jobs hold back)
+static int16_t paxes[NPORT][4];    // left x/y, right x/y (-32768..32767)
+#define buttons pbuttons[0]
+static int cur_port;               // (the device whose events are being read)
 static int hat_x, hat_y;
 static bool hotkey_down, hotkey_used;
 static bf_input_hotkey_fn on_hotkey;
@@ -47,7 +51,7 @@ void bf_input_raw(bool on)
 {
     raw_mode = on;
     raw_n = 0;
-    if (!on) { buttons = 0; hotkey_down = false; }  // (what was held in the menu doesn't carry into the game)
+    if (!on) { memset(pbuttons, 0, sizeof pbuttons); hotkey_down = false; }  // (what was held in the menu doesn't carry into the game)
 }
 bool bf_input_raw_take(int* code, int* value)
 {
@@ -104,6 +108,18 @@ static void open_dev(const char* path)
     memset(d, 0, sizeof *d);
     d->fd = fd;
     ioctl(fd, EVIOCGNAME(sizeof d->name), d->name);
+    // players: the built-in pad first; another pad (USB, Bluetooth) the next free player; keyboards, the volume keys:
+    // player 1
+    const bool joypad = BIT(keys, BTN_SOUTH) || BIT(keys, BTN_DPAD_UP) || BIT(abs, ABS_HAT0X);
+    d->port = 0;
+    if (joypad && !strstr(d->name, "retrogame")) {
+        bool used[NPORT] = { false };
+        for (int i = 0; i < ndevs - 1; i++) used[devs[i].port] = true;
+        bool builtin = false;
+        for (int i = 0; i < ndevs - 1; i++) if (strstr(devs[i].name, "retrogame")) builtin = true;
+        // (with no built-in pad found yet, e.g. on a PC, the first pad is player 1)
+        for (int p = builtin || used[0] ? 1 : 0; p < NPORT; p++) if (!used[p] || p == NPORT - 1) { d->port = p; break; }
+    }
     for (int a = 0; a < 0x40; a++)
         if (BIT(abs, a) && ioctl(fd, EVIOCGABS(a), &d->ax[a]) == 0) d->has_abs[a] = true;
     bf_log("input: %s (%s)", d->name, path);
@@ -152,8 +168,8 @@ static int16_t scale_axis(const struct input_absinfo* a, int v)
 static void set_button(int id, bool down)
 {
     if (id < 0) return;
-    if (down) buttons |= 1u << id;
-    else buttons &= ~(1u << id);
+    if (down) pbuttons[cur_port] |= 1u << id;
+    else pbuttons[cur_port] &= ~(1u << id);
 }
 
 static void key_event(int code, int value)
@@ -174,7 +190,7 @@ static void key_event(int code, int value)
     const int id = map_key(code);
     if (id < 0) return;
     set_button(id, down);
-    if (!on_hotkey) return;
+    if (!on_hotkey || cur_port) return;  // (the hotkeys and jobs are player 1's)
     if (hotkey_down && down) {
         hotkey_used = true;
         on_hotkey(id, true, true);
@@ -187,6 +203,7 @@ void bf_input_read(int fd)
     for (int i = 0; i < ndevs; i++) {
         if (devs[i].fd != fd) continue;
         dev_t_* d = &devs[i];
+        cur_port = d->port;
         struct input_event ev[64];
         ssize_t r;
         while ((r = read(fd, ev, sizeof ev)) > 0) {
@@ -212,7 +229,7 @@ void bf_input_read(int fd)
                         if (hotkey_down && e->value && on_hotkey) { hotkey_used = true; on_hotkey(e->value < 0 ? neg : pos, true, true); }
                     } else {
                         const int slot = e->code == ABS_X ? 0 : e->code == ABS_Y ? 1 : e->code == ABS_RX ? 2 : e->code == ABS_RY ? 3 : -1;
-                        if (slot >= 0) axes[slot] = scale_axis(&d->ax[e->code], e->value);
+                        if (slot >= 0) paxes[d->port][slot] = scale_axis(&d->ax[e->code], e->value);
                     }
                 }
             }
@@ -228,20 +245,21 @@ void bf_input_read(int fd)
 void bf_input_poll(void)
 {
     // while F is held, the game sees no buttons (F + B must not also press B in the game)
-    game_buttons = hotkey_down ? 0 : buttons & ~job_mask;
+    game_buttons[0] = hotkey_down ? 0 : pbuttons[0] & ~job_mask;
+    for (int p = 1; p < NPORT; p++) game_buttons[p] = pbuttons[p];
 }
 
 int16_t bf_input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-    if (port != 0) return 0;
+    if (port >= NPORT) return 0;
     switch (device) {
     case RETRO_DEVICE_JOYPAD:
-        if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)game_buttons;
-        return id < 16 ? (game_buttons >> id) & 1 : 0;
+        if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)game_buttons[port];
+        return id < 16 ? (game_buttons[port] >> id) & 1 : 0;
     case RETRO_DEVICE_ANALOG:
-        if (hotkey_down) return 0;
-        if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT && id < 2) return axes[id];
-        if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT && id < 2) return axes[2 + id];
+        if (hotkey_down && port == 0) return 0;
+        if (index == RETRO_DEVICE_INDEX_ANALOG_LEFT && id < 2) return paxes[port][id];
+        if (index == RETRO_DEVICE_INDEX_ANALOG_RIGHT && id < 2) return paxes[port][2 + id];
         return 0;
     default: return 0;
     }
