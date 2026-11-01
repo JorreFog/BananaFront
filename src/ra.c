@@ -676,12 +676,17 @@ void ra_frame(void)
 {
     if (!rc) return;
     if (logged_in && !load_started) {
-        load_started = 1;
-        block_update(2);
-        // the content the core runs: in memory (a zip's member) or its file
-        if (g_core.rom_data)
-            rc_client_begin_identify_and_load_game(rc, console, g_core.rom_path, g_core.rom_data, g_core.rom_size, on_load, 0);
-        else rc_client_begin_identify_and_load_game(rc, console, g_core.rom_path, NULL, 0, on_load, 0);
+        // the game by the hash frontend.c's thread made (no second pass over the ROM on this thread)
+        extern const char* frontend_ra_hash(void);
+        const char* h = frontend_ra_hash();
+        if (h) {
+            load_started = 1;
+            block_update(2);
+            if (*h) rc_client_begin_load_game(rc, h, on_load, 0);
+            else if (g_core.rom_data)
+                rc_client_begin_identify_and_load_game(rc, console, g_core.rom_path, g_core.rom_data, g_core.rom_size, on_load, 0);
+            else rc_client_begin_identify_and_load_game(rc, console, g_core.rom_path, NULL, 0, on_load, 0);
+        }
     }
     if (game_loaded) {
         rc_client_do_frame(rc);

@@ -6,6 +6,7 @@
 // - Screenshots (RetroArch's names: <game>-YYMMDD-HHMMSS.png in /data/screenshots) and state thumbnails
 //   (<state>.png, as RetroArch's savestate_thumbnail): the core's last picture at its own size.
 #define _GNU_SOURCE
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +75,18 @@ static char crc_s[16], md5_s[40];
 static size_t rom_n;
 
 static void write_game_id(const char* rom);
+static volatile int hashed;
+static void hash_content(void);
+static void* hash_thread(void* a)
+{
+    (void)a;
+    hash_content();
+    write_game_id(NULL);
+    __atomic_store_n(&hashed, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+// RetroAchievements' hash of the content once the thread has it (NULL before; "" when there's none)
+const char* frontend_ra_hash(void) { return __atomic_load_n(&hashed, __ATOMIC_ACQUIRE) ? ra_hash_s : NULL; }
 void frontend_ra_game(unsigned id, const char* title)
 {
     ra_id = id;
@@ -152,8 +165,11 @@ void frontend_init(const char* system, const char* rom)
 {
     sys_id = system ? system : "";
     started = time(NULL);
-    hash_content();
-    write_game_id(rom);
+    // the hashes on a thread of their own (16 MB of GBA ROM: ~0.2 s of md5 + crc + RA's hash at the start)
+    snprintf(gid_rom, sizeof gid_rom, "%s", rom);
+    pthread_t t;
+    if (pthread_create(&t, NULL, hash_thread, NULL) == 0) pthread_detach(t);
+    else hash_thread(NULL);
     comp_on = bcomp_attach(&comp, NULL) == 0;
     if (comp_on) {
         char core[128];
