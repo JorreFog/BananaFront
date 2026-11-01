@@ -5,13 +5,14 @@
 // clock, not a servo that hunts on the ring level).
 #define _GNU_SOURCE
 #include <alsa/asoundlib.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "audio.h"
 #include "bf.h"
 
-static snd_pcm_t* pcm;
+static snd_pcm_t* g_pcm;  // (set by the opening thread when ready; read as "pcm" below open_now)
 static snd_pcm_uframes_t buf_frames, period_frames;
 static bf_resampler rs;
 static double base_ratio = 1.0, cur_ratio = 1.0, drc_delta = 0.005;
@@ -21,10 +22,34 @@ static size_t acc_n, acc_cap;
 static unsigned calls;
 static bf_audio_stats st;
 
+static bool open_now(const char* device, int latency_ms);
+// the device opened on a thread of its own: the Plus's amps take ~0.3 s to come up (its whole game start was 351 ms,
+// 293 of them this); the game starts meanwhile and its first frames' sound is dropped
+static char async_dev[128];
+static int async_ms;
+static void* open_thread(void* a)
+{
+    (void)a;
+    open_now(async_dev, async_ms);
+    return NULL;
+}
 bool bf_audio_open(const char* device, int latency_ms)
 {
-    int e = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
-    if (e < 0) { bf_log("audio: %s: %s", device, snd_strerror(e)); pcm = NULL; return false; }
+    if (getenv("BANANAFRONT_AUDIO_SYNC_OPEN")) return open_now(device, latency_ms);
+    snprintf(async_dev, sizeof async_dev, "%s", device);
+    async_ms = latency_ms;
+    pthread_t t;
+    if (pthread_create(&t, NULL, open_thread, NULL) != 0) return open_now(device, latency_ms);
+    pthread_detach(t);
+    return true;
+}
+
+static bool open_now(const char* device, int latency_ms)
+{
+    snd_pcm_t* p = NULL;
+    int e = snd_pcm_open(&p, device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    if (e < 0) { bf_log("audio: %s: %s", device, snd_strerror(e)); return false; }
+    snd_pcm_t* pcm = p;  // (published at the end, once it's set up)
     snd_pcm_hw_params_t* hw;
     snd_pcm_hw_params_alloca(&hw);
     snd_pcm_hw_params_any(pcm, hw);
@@ -39,7 +64,6 @@ bool bf_audio_open(const char* device, int latency_ms)
         (e = snd_pcm_hw_params(pcm, hw)) < 0) {
         bf_log("audio: %s: %s", device, snd_strerror(e));
         snd_pcm_close(pcm);
-        pcm = NULL;
         return false;
     }
     snd_pcm_hw_params_get_buffer_size(hw, &buf_frames);
@@ -54,8 +78,10 @@ bool bf_audio_open(const char* device, int latency_ms)
     bf_log("audio: %s %u Hz, buffer %lu frames (%.1f ms), period %lu", device, rate, (unsigned long)buf_frames,
            buf_frames * 1000.0 / rate, (unsigned long)period_frames);
     bf_resampler_reset(&rs);
+    __atomic_store_n(&g_pcm, pcm, __ATOMIC_RELEASE);
     return true;
 }
+#define pcm (__atomic_load_n(&g_pcm, __ATOMIC_ACQUIRE))
 
 void bf_audio_set_rate(double core_rate, double core_fps, double display_hz, bool vsync_locked)
 {
@@ -178,8 +204,8 @@ void bf_audio_close(void)
 {
     if (!pcm) return;
     snd_pcm_drop(pcm);
-    snd_pcm_close(pcm);
-    pcm = NULL;
+    snd_pcm_close(g_pcm);
+    __atomic_store_n(&g_pcm, NULL, __ATOMIC_RELEASE);
     free(acc);
     acc = NULL;
     acc_cap = acc_n = 0;
