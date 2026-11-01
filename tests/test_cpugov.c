@@ -70,6 +70,31 @@ int main(void)
     FILE* f = fopen(p, "r");
     if (f) { if (!fgets(gov, sizeof gov, f)) gov[0] = 0; fclose(f); }
     CHECK(!strncmp(gov, "schedutil", 9));  // the governor from before, back
+    // floor mode: schedutil kept (its governor and max untouched), only scaling_min_freq raised and put back
+    put(dir, "scaling_min_freq", "408000\n");
+    put(dir, "scaling_max_freq", "1992000\n");
+    now = 100000;
+    CHECK(bf_cpugov_start_floor(60.0));
+    CHECK(bf_cpugov_mhz() == 600);
+    // frames near the limit (14 ms of 16.7): up a step a second, never past 1416
+    for (int s = 0; s < 8; s++)
+        for (int i = 0; i < 60; i++) { now += 1000.0 / 60; bf_cpugov_frame(14.0, false); bf_cpugov_tick(); }
+    CHECK(bf_cpugov_mhz() == 1416);
+    // light again (5 ms): down a step every 10 s, to 408
+    for (int s = 0; s < 60; s++)
+        for (int i = 0; i < 60; i++) { now += 1000.0 / 60; bf_cpugov_frame(5.0, false); bf_cpugov_tick(); }
+    CHECK(bf_cpugov_mhz() == 408);
+    // a late frame: up one
+    now += 1000; bf_cpugov_frame(20.0, true);
+    CHECK(bf_cpugov_mhz() == 600);
+    bf_cpugov_stop();
+    char mn[64] = "", mx[64] = "";
+    snprintf(p, sizeof p, "%s/scaling_min_freq", dir);
+    if ((f = fopen(p, "r"))) { if (!fgets(mn, sizeof mn, f)) mn[0] = 0; fclose(f); }
+    snprintf(p, sizeof p, "%s/scaling_max_freq", dir);
+    if ((f = fopen(p, "r"))) { if (!fgets(mx, sizeof mx, f)) mx[0] = 0; fclose(f); }
+    CHECK(!strncmp(mn, "408000", 6));   // the floor from before, back
+    CHECK(!strncmp(mx, "1992000", 7));  // max never touched
     if (fails) { fprintf(stderr, "%d failed\n", fails); return 1; }
     printf("cpugov tests passed (settled at %u MHz for 5 ms of work at 1992)\n", settled);
     return 0;

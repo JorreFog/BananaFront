@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 bool bf_cpugov_start(const char* game, double refresh_hz);  // false: no cpufreq (PC)
+bool bf_cpugov_start_floor(double refresh_hz);               // floor mode: schedutil kept, a clock floor under it
 void bf_cpugov_frame(double work_ms, bool late);            // each refresh's work, and whether it missed the refresh
 void bf_cpugov_tick(void);                                  // once a loop: step-down decisions once a second
 void bf_cpugov_boost(int ms);

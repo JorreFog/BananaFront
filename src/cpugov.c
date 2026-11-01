@@ -41,6 +41,9 @@ static struct {
     double next_eval, last_change, last_late, boost_until;
     int boost_from;
     long changes, lates;
+    bool floor;  // floor mode: the system's governor (schedutil) kept, only scaling_min_freq raised (bf_cpugov_start_floor)
+    int floor_top;
+    double started;
 } G;
 
 static bool rd(const char* f, char* out, size_t n)
@@ -69,7 +72,7 @@ static void set_clock(int i, const char* why)
     if (i >= G.nf) i = G.nf - 1;
     if (i == G.cur) return;
     // (max first when going down, min (kept at the lowest) never above max)
-    wru("scaling_max_freq", G.f[i]);
+    wru(G.floor ? "scaling_min_freq" : "scaling_max_freq", G.f[i]);
     if (G.cur >= 0 && getenv("BANANAFRONT_DEBUG")) bf_log("cpugov: %u -> %u MHz (%s)", G.f[G.cur] / 1000, G.f[i] / 1000, why);
     G.cur = i;
     G.changes++;
@@ -116,10 +119,57 @@ bool bf_cpugov_start(const char* game, double refresh_hz)
 
 static int cmpd(const void* a, const void* b) { double x = *(const double*)a, y = *(const double*)b; return x < y ? -1 : x > y; }
 
+// Floor mode (the default with cpugov off): schedutil keeps choosing the clock - it runs a GBA game at ~600 MHz, the
+// cheapest there is - but it can sag to 408 MHz for 10-20 s (gbastress's town scene on the RG DS: 45-49 fps, 100+
+// underruns), so a floor under it: up a step on a late frame or when the slowest frame of a second passes 80 % of a
+// refresh, down a step after 10 s with neither and that frame under 55 %. Never above 1416 MHz or the profile's max.
+bool bf_cpugov_start_floor(double refresh_hz)
+{
+    memset(&G, 0, sizeof G);
+    G.cur = -1;
+    G.boost_from = -1;
+    char b[512];
+    if (!rd("scaling_available_frequencies", b, sizeof b)) return false;
+    for (char *s = NULL, *t = strtok_r(b, " ", &s); t && G.nf < MAXF; t = strtok_r(NULL, " ", &s)) G.f[G.nf++] = (unsigned)atol(t);
+    if (G.nf < 2) return false;
+    if (rd("scaling_min_freq", b, sizeof b)) G.old_min = (unsigned)atol(b);
+    unsigned maxf = G.f[G.nf - 1];
+    if (rd("scaling_max_freq", b, sizeof b)) maxf = (unsigned)atol(b);
+    G.floor_top = 0;
+    for (int i = 0; i < G.nf; i++) if (G.f[i] <= maxf && G.f[i] <= 1416000) G.floor_top = i;
+    G.floor = true;
+    G.period_ms = 1000.0 / (refresh_hz > 1 ? refresh_hz : 60.0);
+    int start = 0;
+    for (int i = 0; i < G.nf; i++) if (G.f[i] >= G.old_min) { start = i; break; }
+    if (start < 1 && G.floor_top >= 1) start = 1;  // (600 MHz: where schedutil runs the light cores anyway)
+    set_clock(start, "start");
+    G.on = true;
+    G.started = G.next_eval = bf_now_ms() + 1000;
+    bf_log("cpugov: clock floor under schedutil, %u MHz to start (up to %u)", G.f[G.cur] / 1000, G.f[G.floor_top] / 1000);
+    return true;
+}
+
+static void floor_frame(bool late)
+{
+    const double t = bf_now_ms();
+    if (!late || t < G.started + 2000 || t < G.boost_until || t - G.last_change < 300) return;
+    G.lates++;
+    G.last_late = t;
+    if (G.cur < G.floor_top) set_clock(G.cur + 1, "late frame");
+}
+
+static void floor_tick(double t)
+{
+    if (G.win_p99 > G.period_ms * 0.80) { if (G.cur < G.floor_top) set_clock(G.cur + 1, "near the limit"); return; }
+    if (G.cur <= 0 || t - G.last_change < 10000 || t - G.last_late < 10000) return;
+    if (G.win_p99 < G.period_ms * 0.55) set_clock(G.cur - 1, "headroom");
+}
+
 void bf_cpugov_frame(double work_ms, bool late)
 {
     if (!G.on) return;
     if (G.nwin < 64) G.win[G.nwin++] = work_ms;
+    if (G.floor) { floor_frame(late); return; }
     if (late && bf_now_ms() >= G.boost_until && bf_now_ms() - G.last_change > 300) {
         // a missed refresh at this clock: up now, this clock banned for a while (longer each time)
         const int bad = G.cur;
@@ -144,6 +194,7 @@ void bf_cpugov_tick(void)
     qsort(G.win, G.nwin, sizeof *G.win, cmpd);
     G.win_p99 = G.win[(int)(G.nwin * 0.99)];
     G.nwin = 0;
+    if (G.floor) { floor_tick(t); return; }
     // near the limit (the slowest frame of the last second over 90 % of a refresh): up one step before a frame is late
     if (G.win_p99 > G.period_ms * 0.90 && G.cur < G.nf - 1) { set_clock(G.cur + 1, "near the limit"); return; }
     if (G.cur <= 0) return;
@@ -159,7 +210,7 @@ void bf_cpugov_boost(int ms)
     if (!G.on) return;
     if (G.boost_from < 0) G.boost_from = G.cur;
     G.boost_until = bf_now_ms() + ms;
-    set_clock(G.nf - 1, "boost");
+    set_clock(G.floor ? G.floor_top : G.nf - 1, "boost");
 }
 
 unsigned bf_cpugov_mhz(void) { return G.on && G.cur >= 0 ? G.f[G.cur] / 1000 : 0; }
@@ -168,6 +219,12 @@ void bf_cpugov_stop(void)
 {
     if (!G.on) return;
     if (G.boost_from >= 0) G.cur = G.boost_from;
+    if (G.floor) {
+        bf_log("cpugov: clock floor ended at %u MHz, %ld changes, %ld late-frame steps", G.f[G.cur] / 1000, G.changes, G.lates);
+        if (G.old_min) wru("scaling_min_freq", G.old_min);
+        G.on = false;
+        return;
+    }
     // remember this game's clock (the one it settled at), for the next start
     char dir[1100];
     snprintf(dir, sizeof dir, "%s", G.store);

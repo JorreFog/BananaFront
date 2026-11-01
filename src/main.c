@@ -690,6 +690,7 @@ int main(int argc, char** argv)
     bf_input_open(on_button);
     if (getenv("BANANAFRONT_LOWLAT") && atoi(getenv("BANANAFRONT_LOWLAT"))) A.lowlat = true;
     if (A.cpugov || (getenv("BANANAFRONT_CPUGOV") && atoi(getenv("BANANAFRONT_CPUGOV")))) bf_cpugov_start(g_paths.game, refresh);
+    else if (!getenv("BANANAFRONT_FLOOR") || atoi(getenv("BANANAFRONT_FLOOR"))) bf_cpugov_start_floor(refresh);  // (the default)
     load_jobs();
     frontend_init(A.system, A.rom);
     if (A.border && A.brect[2] > 0) frontend_border(A.border, A.brect[0], A.brect[1], A.brect[2], A.brect[3]);
