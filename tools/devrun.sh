@@ -10,6 +10,7 @@
 #   name is there; removed afterwards. Its save/state files are left (they're the run's data: copied back).
 # - Collects: bananafront's log + its stats lines (fps, vblank, run ms avg/p50/p99, cpu %, audio underruns/fill/ratio)
 #   every 10 s, the game-id file; quits through the game panel's pipe (QUIT); everything undone.
+# PRE='<bash commands>': run on the PC after staging /run/bdev/bf, before the game starts (DEV and OUT set).
 # MID='<bash commands>': run on the PC half-way (DEV and OUT set), e.g. to open the menu and take a picture.
 # Results: ~/bf-runs/<rom>/<date>-<dev>-<tag>/  (bananafront.log, stats.txt, game-id, saves)
 set -u
@@ -39,6 +40,7 @@ dev 'rm -rf /run/bdev/bf; mkdir -p /run/bdev/bf'
 for f in "$BF_BIN:bananafront" "$BF_LAUNCHER:launcher" "$K/run:run-bananafront" ${CN:+"$CORE:$CN"}; do
     dev "cat > /run/bdev/bf/${f##*:} && chmod +x /run/bdev/bf/${f##*:}" < "${f%%:*}" || exit 1
 done
+[ -n "${PRE:-}" ] && DEV=$DEV OUT=$OUT bash -c "$PRE"   # (after staging, before the start: e.g. a companion shm)
 DROM=/data/roms/$SYS/$B
 NEWROM=0
 if dev "[ -e '$DROM' ]"; then echo "using the device's $DROM"; else

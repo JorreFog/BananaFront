@@ -184,6 +184,7 @@ static void copy_mmap(const struct retro_memory_map* m)
 
 // hooks other modules provide (weak: a test build may leave them out)
 __attribute__((weak)) bool bf_hw_render_request(struct retro_hw_render_callback* cb) { (void)cb; return false; }
+__attribute__((weak)) bool bf_direct_framebuffer(struct retro_framebuffer* fb) { (void)fb; return false; }
 
 static bool environment(unsigned cmd, void* data)
 {
@@ -285,7 +286,7 @@ static bool environment(unsigned cmd, void* data)
     case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: return false;
     case RETRO_ENVIRONMENT_GET_VFS_INTERFACE: return false;
     case RETRO_ENVIRONMENT_GET_LED_INTERFACE: return false;
-    case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER: return false;
+    case RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER: return bf_direct_framebuffer(data);
     case RETRO_ENVIRONMENT_GET_GAME_INFO_EXT: return false;
     case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: return true;
     case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: return false;

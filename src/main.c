@@ -145,9 +145,35 @@ static void stats_line(bool final)
 
 // ---- the picture -----------------------------------------------------------------------------------------------
 
+// BANANAFRONT_DIRECT=1 (a core may A/B it on its stress ROM): the core draws straight into the scanout buffer
+// (GET_CURRENT_SOFTWARE_FRAMEBUFFER), so the frame needs no copy. The buffer is uncached (write-combined) memory: a
+// core that reads back what it drew gets slower, hence opt-in.
+static void* direct_buf;
+static int direct_on = -1;
+bool bf_direct_framebuffer(struct retro_framebuffer* fb)
+{
+    if (direct_on < 0) direct_on = getenv("BANANAFRONT_DIRECT") && atoi(getenv("BANANAFRONT_DIRECT"));
+    if (!direct_on || bf_video_wants_xrgb() || g_core.fmt == RETRO_PIXEL_FORMAT_0RGB1555) return false;
+    int pitch = 0;
+    void* p = bf_video_begin(fb->width, fb->height, g_core.fmt, g_core.av.geometry.aspect_ratio, &pitch);
+    if (!p) return false;
+    fb->data = p;
+    fb->pitch = (size_t)pitch;
+    fb->format = g_core.fmt;
+    fb->memory_flags = 0;  // (uncached)
+    direct_buf = p;
+    return true;
+}
+
 void bf_video_frame(const void* data, unsigned w, unsigned h, size_t pitch)
 {
     if (!data || data == RETRO_HW_FRAME_BUFFER_VALID) { frame_dupe = true; return; }
+    if (data == direct_buf) {  // drawn in place: nothing to copy
+        last.data = data; last.w = w; last.h = h; last.pitch = pitch;
+        direct_buf = NULL;
+        frame_new = true;
+        return;
+    }
     last.data = data; last.w = w; last.h = h; last.pitch = pitch;
     const float aspect = g_core.av.geometry.aspect_ratio > 0 ? g_core.av.geometry.aspect_ratio : 0;
     int dp = 0;
