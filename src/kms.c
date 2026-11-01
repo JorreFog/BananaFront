@@ -602,6 +602,11 @@ void bf_video_canvas_show(int k)
     drmModeAtomicAddProperty(r, K.plane, K.p_cy, 0);
     drmModeAtomicAddProperty(r, K.plane, K.p_cw, b->w);
     drmModeAtomicAddProperty(r, K.plane, K.p_ch, b->h);
+    if (K.ov_was) {  // (no pop-up over the menu)
+        drmModeAtomicAddProperty(r, K.ov, K.ov_fb, 0);
+        drmModeAtomicAddProperty(r, K.ov, K.ov_crtc, 0);
+        K.ov_was = false;
+    }
     // (blocking: the menu draws at its own pace, and the buffer it gets next is the one not on the panel)
     if (drmModeAtomicCommit(K.fd, r, 0, NULL) == 0) K.canvas_shown = k;
     drmModeAtomicFree(r);
