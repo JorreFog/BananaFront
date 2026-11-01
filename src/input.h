@@ -19,4 +19,5 @@ void bf_input_set_job_mask(uint32_t mask);
 // the menu: raw evdev key events (code, value 1 down / 0 up; the hat as BTN_DPAD_*) queued instead of played
 void bf_input_raw(bool on);
 bool bf_input_raw_take(int* code, int* value);
+void bf_input_hotplug_tick(void);  // between frames: pads that appeared, opened
 void bf_input_close(void);

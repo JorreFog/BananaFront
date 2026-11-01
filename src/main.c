@@ -735,6 +735,7 @@ int main(int argc, char** argv)
                 if (pf[i].revents & POLLIN) bf_input_read(pf[i].fd);
             if (cmd_fd >= 0 && cpos < n && (pf[cpos].revents & (POLLIN | POLLHUP))) bf_commands_poll();
         }
+        bf_input_hotplug_tick();
         if (bf_menu_run_pending()) want_frame = true;  // (the menu took the flip events while it was open)
         if (paused) { frontend_paused(); continue; }
         if (bf_video_flip_pending() || !want_frame) continue;

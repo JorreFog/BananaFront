@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -125,9 +126,19 @@ static void open_dev(const char* path)
     bf_log("input: %s (%s)", d->name, path);
 }
 
+// pads that come and go (USB, Bluetooth) while a game runs: /dev/input watched with inotify; a new event node is
+// opened on the next read (its permissions settle a moment after it appears, so it's retried a few times)
+static int ino = -1;
+static char pending_dev[4][64];
+static int npending, pending_tries;
+
 void bf_input_open(bf_input_hotkey_fn fn)
 {
     on_hotkey = fn;
+    if (!getenv("BANANAFRONT_INPUT")) {
+        ino = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (ino >= 0 && inotify_add_watch(ino, "/dev/input", IN_CREATE) < 0) { close(ino); ino = -1; }
+    }
     const char* only = getenv("BANANAFRONT_INPUT");  // (tests: one device)
     if (only) { open_dev(only); return; }
     DIR* dir = opendir("/dev/input");
@@ -148,6 +159,7 @@ void bf_input_open(bf_input_hotkey_fn fn)
 int bf_input_fds(int* fds, int max)
 {
     int n = 0;
+    if (ino >= 0 && n < max) fds[n++] = ino;
     for (int i = 0; i < ndevs && n < max; i++) fds[n++] = devs[i].fd;
     return n;
 }
@@ -198,8 +210,42 @@ static void key_event(int code, int value)
     else if (!down) on_hotkey(id, false, hotkey_down);
 }
 
+static void hotplug_read(void)
+{
+    char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    ssize_t r;
+    while ((r = read(ino, buf, sizeof buf)) > 0)
+        for (char* p = buf; p < buf + r;) {
+            struct inotify_event* e = (struct inotify_event*)p;
+            if (e->len && !strncmp(e->name, "event", 5) && npending < 4) {
+                snprintf(pending_dev[npending++], sizeof pending_dev[0], "/dev/input/%s", e->name);
+                pending_tries = 0;
+            }
+            p += sizeof *e + e->len;
+        }
+}
+
+// (called between frames by main: a new pad is opened once it can be)
+void bf_input_hotplug_tick(void)
+{
+    if (!npending) return;
+    for (int i = 0; i < npending;) {
+        const int before = ndevs;
+        int fd = open(pending_dev[i], O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            close(fd);
+            open_dev(pending_dev[i]);
+            if (ndevs > before) bf_log("input: connected while playing");
+            memmove(pending_dev[i], pending_dev[i + 1], sizeof pending_dev[0] * (size_t)(npending - i - 1));
+            npending--;
+        } else i++;
+    }
+    if (npending && ++pending_tries > 300) npending = 0;  // (~5 s of tries: not a device we may read)
+}
+
 void bf_input_read(int fd)
 {
+    if (fd == ino) { hotplug_read(); return; }
     for (int i = 0; i < ndevs; i++) {
         if (devs[i].fd != fd) continue;
         dev_t_* d = &devs[i];
@@ -270,6 +316,7 @@ bool bf_input_hotkey_held(void) { return hotkey_down; }
 
 void bf_input_close(void)
 {
+    if (ino >= 0) { close(ino); ino = -1; }
     for (int i = 0; i < ndevs; i++) close(devs[i].fd);
     ndevs = 0;
 }
