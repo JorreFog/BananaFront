@@ -96,8 +96,10 @@ bool bf_cpugov_start(const char* game, double refresh_hz)
     FILE* f = fopen(G.store, "r");
     if (f) {
         unsigned k = 0;
+        // (one step above it: a game's start - loading, a new area - is often heavier than where it was left, and the
+        // soak's first 10 s at the remembered 408 MHz had 10 late frames; the step down comes 5 s later)
         if (fscanf(f, "%u", &k) == 1)
-            for (int i = 0; i < G.nf; i++) if (G.f[i] == k) start = i;
+            for (int i = 0; i < G.nf; i++) if (G.f[i] == k) start = i + 1 < G.nf ? i + 1 : i;
         fclose(f);
     }
     wru("scaling_min_freq", G.f[0]);
