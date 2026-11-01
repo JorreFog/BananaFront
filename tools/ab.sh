@@ -24,6 +24,14 @@ mk_conf() {  # mk_conf <run line> <out>
 }
 mk_conf "/usr/libexec/banana/run-retroarch $CORE %ROM%" "$K/sys-ra.conf"
 mk_conf "/run/bdev/bf/run-bananafront $CORE %ROM%" "$K/sys-bf.conf"
+# a card with its own full systems.conf (the Plus): banana-ui merges it over the image's, so it is switched too
+CARD=0; CARDF=
+if dev "[ -f /data/banana/systems.conf ]"; then
+    CARD=1; CARDF="$K/card-ra.conf:card-ra.conf $K/card-bf.conf:card-bf.conf"
+    dev "cat /data/banana/systems.conf" > "$K/card.orig"
+    awk -v s="[$SYS]" -v r="run = /usr/libexec/banana/run-retroarch $CORE %ROM%" '/^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/card.orig" > "$K/card-ra.conf"
+    awk -v s="[$SYS]" -v r="run = /run/bdev/bf/run-bananafront $CORE %ROM%" '/^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/card.orig" > "$K/card-bf.conf"
+fi
 cat > "$K/wrap" <<W
 #!/bin/sh
 export BANANAFRONT_BIN=/run/bdev/bf/bananafront BANANAFRONT_STATS=/run/bdev/bf/stats.txt ${BF_ENV:-}
@@ -31,7 +39,7 @@ exec /run/bdev/bf/launcher "\$@"
 W
 dev 'rm -rf /run/bdev/bf; mkdir -p /run/bdev/bf' || exit 1
 for f in "$BF_BIN:bananafront" "$BF_LAUNCHER:launcher" "$K/wrap:run-bananafront" "$K/sys-ra.conf:sys-ra.conf" \
-         "$K/sys-bf.conf:sys-bf.conf"; do
+         "$K/sys-bf.conf:sys-bf.conf" $CARDF; do
     dev "cat > /run/bdev/bf/${f##*:} && chmod +x /run/bdev/bf/${f##*:}" < "${f%%:*}" || exit 1
 done
 # the sampler: one process, reads /proc once a second (cost ~nil next to a frontend)
@@ -59,7 +67,7 @@ echo -e "round\tfrontend\tproc_cpu%\tsys_busy%\tmean_MHz\ttemp0\ttemp1\trss_kB" 
 run_one() {  # run_one <ra|bf> <round>
     local fe=$1 rd=$2 name pid
     [ $fe = ra ] && name=retroarch || name=bananafront
-    dev "umount -l /etc/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/sys-$fe.conf /etc/banana/systems.conf"
+    dev "umount -l /etc/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/sys-$fe.conf /etc/banana/systems.conf; if [ $CARD = 1 ]; then umount -l /data/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/card-$fe.conf /data/banana/systems.conf; fi"
     dev 'killall banana-ui; sleep 5' > /dev/null
     # wait until the menu runs again and is cool enough to compare
     dev 'for i in $(seq 60); do t=$(cat /sys/class/thermal/thermal_zone0/temp); [ $t -lt 50000 ] && break; sleep 2; done'
@@ -78,7 +86,7 @@ run_one() {  # run_one <ra|bf> <round>
 # banana-ui with the lease for run-bananafront (bind-mounted for the whole A/B: the RetroArch runs use it too)
 [ -n "$UIARG" ] && $DS/deploy.sh "$DEV" --restart ui $UIARG > /dev/null
 for rd in $(seq "$ROUNDS"); do run_one ra $rd; run_one bf $rd; done
-dev 'umount -l /etc/banana/systems.conf 2>/dev/null'
+dev 'umount -l /etc/banana/systems.conf 2>/dev/null; grep -q " /data/banana/systems.conf " /proc/mounts && umount -l /data/banana/systems.conf'
 $DS/deploy.sh "$DEV" undo > /dev/null
 [ $NEWROM = 1 ] && dev "rm -f '$DROM'"
 dev 'rm -rf /run/bdev/bf'

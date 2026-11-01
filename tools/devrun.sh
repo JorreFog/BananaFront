@@ -31,6 +31,14 @@ case $CORE in */*) CN=$(basename "$CORE"); CARG=/run/bdev/bf/$CN ;; *) CN=; CARG
 awk -v s="[$SYS]" -v r="run = /run/bdev/bf/run-bananafront $CARG %ROM%" '
   /^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/systems.conf.orig" > "$K/systems.conf"
 grep -q "/run/bdev/bf/run-bananafront" "$K/systems.conf" || { echo "no [$SYS] run line"; exit 1; }
+# a card with its own full systems.conf (the Plus): banana-ui merges that over the image's, so it gets the line too
+CARDARG=
+if dev "[ -f /data/banana/systems.conf ]"; then
+    dev "cat /data/banana/systems.conf" > "$K/card.orig"
+    awk -v s="[$SYS]" -v r="run = /run/bdev/bf/run-bananafront $CARG %ROM%" '
+      /^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/card.orig" > "$K/card.conf"
+    CARDARG="$K/card.conf=/data/banana/systems.conf"
+fi
 cat > "$K/run" <<W
 #!/bin/sh
 export BANANAFRONT_BIN=/run/bdev/bf/bananafront BANANAFRONT_STATS=/run/bdev/bf/stats.txt ${BF_ENV:-}
@@ -46,7 +54,7 @@ NEWROM=0
 if dev "[ -e '$DROM' ]"; then echo "using the device's $DROM"; else
     dev "mkdir -p /data/roms/$SYS && cat > '$DROM'" < "$ROM" && NEWROM=1; fi
 UIARG=; [ -f "$BF_UI" ] && UIARG="$BF_UI=/usr/bin/banana-ui"
-$DS/deploy.sh "$DEV" --restart ui "$K/systems.conf=/etc/banana/systems.conf" $UIARG || exit 1
+$DS/deploy.sh "$DEV" --restart ui "$K/systems.conf=/etc/banana/systems.conf" $CARDARG $UIARG || exit 1
 sleep 6
 dev "echo '$DROM' > /run/banana/launch; for i in \$(seq 40); do pidof bananafront >/dev/null && break; sleep 0.5; done; pidof bananafront || echo 'bananafront did not start'"
 if [ -n "${MID:-}" ]; then sleep $((SEC / 2)); DEV=$DEV OUT=$OUT bash -c "$MID"; sleep $((SEC - SEC / 2)); else sleep "$SEC"; fi

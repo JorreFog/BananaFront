@@ -19,10 +19,18 @@ dev "cat /etc/banana/systems.conf" > "$K/systems.orig" || exit 1
 mk_conf() { awk -v s="[$SYS]" -v r="run = $1" '/^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/systems.orig" > "$2"; }
 mk_conf "/usr/libexec/banana/run-retroarch $CORE %ROM%" "$K/sys-ra.conf"
 mk_conf "/run/bdev/bf/run-bananafront $CORE %ROM%" "$K/sys-bf.conf"
+# a card with its own full systems.conf (the Plus): banana-ui merges it over the image's, so it is switched too
+CARD=0; CARDF=
+if dev "[ -f /data/banana/systems.conf ]"; then
+    CARD=1; CARDF="$K/card-ra.conf:card-ra.conf $K/card-bf.conf:card-bf.conf"
+    dev "cat /data/banana/systems.conf" > "$K/card.orig"
+    awk -v s="[$SYS]" -v r="run = /usr/libexec/banana/run-retroarch $CORE %ROM%" '/^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/card.orig" > "$K/card-ra.conf"
+    awk -v s="[$SYS]" -v r="run = /run/bdev/bf/run-bananafront $CORE %ROM%" '/^\[/ { in_s = ($0 == s) } in_s && /^run *=/ { print r; next } { print }' "$K/card.orig" > "$K/card-bf.conf"
+fi
 printf '#!/bin/sh\nexport BANANAFRONT_BIN=/run/bdev/bf/bananafront\nexec /run/bdev/bf/launcher "$@"\n' > "$K/wrap"
 dev 'rm -rf /run/bdev/bf; mkdir -p /run/bdev/bf'
 for f in "$R/build/$BOARD/bananafront:bananafront" "$HOME/ovn-front-bl/system/rootfs/usr/libexec/banana/run-bananafront:launcher" \
-         "$K/wrap:run-bananafront" "$K/sys-ra.conf:sys-ra.conf" "$K/sys-bf.conf:sys-bf.conf"; do
+         "$K/wrap:run-bananafront" "$K/sys-ra.conf:sys-ra.conf" "$K/sys-bf.conf:sys-bf.conf" $CARDF; do
     dev "cat > /run/bdev/bf/${f##*:} && chmod +x /run/bdev/bf/${f##*:}" < "${f%%:*}" || exit 1
 done
 DROM=/data/roms/$SYS/$B
@@ -34,7 +42,7 @@ clean
 run() {  # run <ra|bf> <commands at SEC-3 s, ';'-separated> <tag>
     local fe=$1 cmds=$2 tag=$3 name
     [ $fe = ra ] && name=retroarch || name=bananafront
-    dev "umount -l /etc/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/sys-$fe.conf /etc/banana/systems.conf; killall banana-ui"
+    dev "umount -l /etc/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/sys-$fe.conf /etc/banana/systems.conf; if [ $CARD = 1 ]; then umount -l /data/banana/systems.conf 2>/dev/null; mount --bind /run/bdev/bf/card-$fe.conf /data/banana/systems.conf; fi; killall banana-ui"
     sleep 6
     dev "rm -f /run/banana/retroarch.log /data/banana/logs/bananafront.log; echo '$DROM' > /run/banana/launch; for i in \$(seq 40); do pidof $name >/dev/null && break; sleep 0.5; done"
     sleep $((SEC - 4))
@@ -49,7 +57,7 @@ run() {  # run <ra|bf> <commands at SEC-3 s, ';'-separated> <tag>
 run ra "SAVE_STATE" 1-ra
 run bf "LOAD_STATE;SAVE_STATE_SLOT 1" 2-bf
 run ra "STATE_SLOT_PLUS;LOAD_STATE;STATE_SLOT_MINUS" 3-ra   # (the slot back to 0: RetroArch keeps it in its config)
-dev 'umount -l /etc/banana/systems.conf 2>/dev/null'
+dev 'umount -l /etc/banana/systems.conf 2>/dev/null; grep -q " /data/banana/systems.conf " /proc/mounts && umount -l /data/banana/systems.conf'
 $DS/deploy.sh "$DEV" undo > /dev/null
 clean
 dev "rm -f '$DROM'; rm -rf /run/bdev/bf"
