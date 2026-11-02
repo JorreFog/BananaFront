@@ -104,6 +104,7 @@ static struct {
     uint64_t lat_n;
     uint64_t missed;  // (low latency: refreshes a commit missed)
     uint64_t caught;  // frames run to catch up after a slow refresh
+    unsigned long long ff_late;  // fast-forward: flips a refresh late (its budget then shrinks)
     double copy_ms, commit_ms;  // (the parts of fe_ms: the picture's copy, and frontend_frame + the commit)
     double fe_ms;  // BananaFront's own time (the picture's copy, the sound, the commit, the overlay's wake-up)
     double mhz_sum;  // the CPU's clock, read every 6th frame (what schedutil gave, cpugov off)
@@ -152,13 +153,13 @@ static void stats_line(bool final)
     snprintf(b, sizeof b,
              "%s fps %.2f vblank %.3f Hz run %.2f/%.2f/%.2f ms (avg/p50/p99) cpu %.1f%% dupes %llu late %llu "
              "audio underruns %u fill %.2f ratio %.5f/%.5f dropped %zu clock %u input-age %.1f ms missed %llu caught-up %llu frontend %.3f ms/frame "
-             "(copy %.3f audio %.3f commit %.3f) mhz %.0f/%u (avg/min)",
+             "(copy %.3f audio %.3f commit %.3f) mhz %.0f/%u (avg/min) ff-late %llu",
              final ? "END" : "stats", S.frames * 1000.0 / wall, S.flip_n ? 1000.0 / (S.flip_sum / S.flip_n) : 0, avg,
              n ? sorted[n / 2] : 0, n ? sorted[(int)(n * 0.99)] : 0, cpu * 100.0 / wall, (unsigned long long)S.dupes,
              (unsigned long long)S.late, as.underruns, as.fill_n ? as.fill_sum / as.fill_n : 0, as.ratio, as.base_ratio,
              as.dropped, bf_cpugov_mhz(), S.lat_n ? S.lat_sum / S.lat_n : 0, (unsigned long long)S.missed, (unsigned long long)S.caught, S.frames ? (S.fe_ms + aud) / S.frames : 0,
              S.frames ? S.copy_ms / S.frames : 0, S.frames ? aud / S.frames : 0, S.frames ? S.commit_ms / S.frames : 0,
-             S.mhz_n ? S.mhz_sum / S.mhz_n : 0, S.mhz_min);
+             S.mhz_n ? S.mhz_sum / S.mhz_n : 0, S.mhz_min, S.ff_late);
     bf_log("%s", b);
     if (A.stats) {
         FILE* f = fopen(A.stats, "a");
@@ -172,6 +173,7 @@ static void stats_line(bool final)
     S.lat_n = 0;
     S.fe_ms = S.copy_ms = S.commit_ms = 0;
     S.missed = 0;
+    S.ff_late = 0;
     S.caught = 0;
     S.mhz_sum = 0;
     S.mhz_n = S.mhz_min = 0;
@@ -719,6 +721,11 @@ int main(int argc, char** argv)
     double owed_since = 0;
     int last_frame_late = 0;  // (the last frame missed its refresh itself: not the GPU's doing)
     double last_frame_ms = 1000.0 / refresh;  // a core frame's time, smoothed
+    // fast-forward: how much of a refresh the frames may take before the commit. 80 % with no shader; with one, the GPU's
+    // pass comes after the commit and before the latch, and at 80 % it missed every refresh (flips at 30 Hz: RG DS
+    // sharp-bilinear 220 fps fast-forward vs 780 without; tester, 0.5.1 dev). So it adapts: a flip a refresh late takes
+    // 1.5 ms off at once, each one on time gives 0.02 ms back (up to 80 %), never under 25 %
+    double ff_budget = 1000.0 / refresh * 0.8;
     bool want_frame = true;
     while (!quit && !sig_quit) {
         // wait: for the flip (the next refresh), input, commands
@@ -764,6 +771,16 @@ int main(int argc, char** argv)
                     ll_budget += 2.0;
                     if (ll_budget > 1000.0 / refresh - 1.0) ll_budget = 1000.0 / refresh - 1.0;
                     S.missed++;
+                }
+                if (ff && S.flip_prev > 0 && t - S.flip_prev < 100) {
+                    if (t - S.flip_prev > 1500.0 / refresh) {
+                        ff_budget -= 1.5;
+                        if (ff_budget < 1000.0 / refresh * 0.25) ff_budget = 1000.0 / refresh * 0.25;
+                        S.ff_late++;
+                        // (with a shader the GPU's pass is half of it: its clock floor up too, as for a late pass
+                        // at normal speed. The Plus stayed at 200 MHz through fast-forward: half the speed without one)
+                        if (bf_video_shader_name()[0]) bf_gpufloor_missed();
+                    } else if ((ff_budget += 0.02) > 1000.0 / refresh * 0.8) ff_budget = 1000.0 / refresh * 0.8;
                 }
                 // a flip a refresh late while the frame itself was on time, with a shader: the GPU's pass
                 if (!ff && last_frame_late == 0 && bf_video_shader_name()[0] && S.flip_prev > 0 &&
@@ -827,7 +844,7 @@ int main(int argc, char** argv)
         const double t0 = bf_now_ms();
         if (ff) {
             // as many frames as fit in most of a refresh (the last one shown)
-            const double budget = 1000.0 / refresh * 0.8;
+            const double budget = ff_budget;
             nrun = 0;
             do { g_core.run(); frontend_core_frame(); nrun++; } while (bf_now_ms() - t0 < budget && nrun < 16);
         } else
