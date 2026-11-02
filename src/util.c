@@ -107,6 +107,36 @@ bool bf_conf_file_get(const char* path, const char* key, char* out, size_t n)
     return found;
 }
 
+bool bf_system_setting(const char* data, const char* etc, const char* key, const char* system, char* out, size_t n)
+{
+    char k[128];
+    if (system && *system) snprintf(k, sizeof k, "%s.%s", key, system);
+    else snprintf(k, sizeof k, "%s", key);
+    return bf_conf_file_get(data, k, out, n) || bf_conf_file_get(etc, k, out, n);
+}
+
+int bf_swap_ab(int id)
+{
+    switch (id) {
+    case RETRO_DEVICE_ID_JOYPAD_A: return RETRO_DEVICE_ID_JOYPAD_B;
+    case RETRO_DEVICE_ID_JOYPAD_B: return RETRO_DEVICE_ID_JOYPAD_A;
+    case RETRO_DEVICE_ID_JOYPAD_X: return RETRO_DEVICE_ID_JOYPAD_Y;
+    case RETRO_DEVICE_ID_JOYPAD_Y: return RETRO_DEVICE_ID_JOYPAD_X;
+    default: return id;
+    }
+}
+
+uint32_t bf_stick_dpad(int x, int y)
+{
+    const int t = 16384;  // (half a tilt: RetroArch's input_axis_threshold 0.5)
+    uint32_t b = 0;
+    if (x >= t) b |= 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT;
+    if (x <= -t) b |= 1u << RETRO_DEVICE_ID_JOYPAD_LEFT;
+    if (y >= t) b |= 1u << RETRO_DEVICE_ID_JOYPAD_DOWN;
+    if (y <= -t) b |= 1u << RETRO_DEVICE_ID_JOYPAD_UP;
+    return b;
+}
+
 // ---- paths -----------------------------------------------------------------------------------------------------
 
 // RetroArch (runloop_path_set_basename): the content path's file name without its last extension; a zip's own name

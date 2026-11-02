@@ -65,6 +65,8 @@ bool bf_input_raw_take(int* code, int* value)
 }
 
 void bf_input_set_job_mask(uint32_t mask) { job_mask = mask; }
+static bool pad_swap_ab, pad_stick_dpad;
+void bf_input_set_pad(bool swap_ab, bool stick_dpad) { pad_swap_ab = swap_ab; pad_stick_dpad = stick_dpad; }
 
 #define BIT(a, i) (((a)[(i) / (8 * sizeof(long))] >> ((i) % (8 * sizeof(long)))) & 1)
 
@@ -298,7 +300,15 @@ void bf_input_read(int fd)
 void bf_input_poll(void)
 {
     // while F is held, the game sees no buttons (F + B must not also press B in the game)
-    game_buttons[0] = hotkey_down ? 0 : pbuttons[0] & ~job_mask;
+    uint32_t b = pbuttons[0];
+    if (pad_stick_dpad) b |= bf_stick_dpad(paxes[0][0], paxes[0][1]);
+    if (pad_swap_ab) {
+        uint32_t s = b & ~(1u << RETRO_DEVICE_ID_JOYPAD_A | 1u << RETRO_DEVICE_ID_JOYPAD_B | 1u << RETRO_DEVICE_ID_JOYPAD_X | 1u << RETRO_DEVICE_ID_JOYPAD_Y);
+        for (int id = 0; id < 16; id++)
+            if (b >> id & 1) s |= 1u << bf_swap_ab(id);
+        b = s;
+    }
+    game_buttons[0] = hotkey_down ? 0 : b & ~job_mask;
     for (int p = 1; p < NPORT; p++) game_buttons[p] = pbuttons[p];
 }
 

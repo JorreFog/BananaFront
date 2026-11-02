@@ -63,6 +63,50 @@ static void test_conf(void)
     remove(f);
 }
 
+// Settings > Other systems > Buttons > a system (PR #151): ra_btn_<b>.<system> and ra_swap_ab.<system>, the card's
+// settings.conf first, then the image's template; no system (tests, a frontend run by hand): the plain key
+static void test_system_setting(void)
+{
+    const char* d = "/tmp/bf-test-data.conf";
+    const char* e = "/tmp/bf-test-etc.conf";
+    FILE* o = fopen(d, "w");
+    fprintf(o, "ra_btn_r2 = ff\nra_btn_l2.gba = save\nra_swap_ab.snes = on\n");
+    fclose(o);
+    o = fopen(e, "w");
+    fprintf(o, "ra_btn_r2.gba = ff\nra_btn_r2.snes = ff\nra_btn_l2.gba = load\n");
+    fclose(o);
+    char v[32];
+    CHECK(bf_system_setting(d, e, "ra_btn_l2", "gba", v, sizeof v)); CHECKS(v, "save");   // the card's own
+    CHECK(bf_system_setting(d, e, "ra_btn_r2", "gba", v, sizeof v)); CHECKS(v, "ff");     // the template's
+    CHECK(!bf_system_setting(d, e, "ra_btn_r2", "n64", v, sizeof v));                     // none: the game's own
+    CHECK(!bf_system_setting(d, e, "ra_btn_l3", "gba", v, sizeof v));
+    CHECK(bf_system_setting(d, e, "ra_swap_ab", "snes", v, sizeof v)); CHECKS(v, "on");
+    CHECK(!bf_system_setting(d, e, "ra_swap_ab", "gba", v, sizeof v));
+    CHECK(bf_system_setting(d, e, "ra_btn_r2", "", v, sizeof v)); CHECKS(v, "ff");        // no system: the plain key
+    CHECK(bf_system_setting(d, e, "ra_btn_r2", NULL, v, sizeof v)); CHECKS(v, "ff");
+    remove(d);
+    remove(e);
+}
+
+// Swap A/B and X/Y, and the left stick as the d-pad (#142), as run-retroarch gives RetroArch
+static void test_pad_maps(void)
+{
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_A) == RETRO_DEVICE_ID_JOYPAD_B);
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_B) == RETRO_DEVICE_ID_JOYPAD_A);
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_X) == RETRO_DEVICE_ID_JOYPAD_Y);
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_Y) == RETRO_DEVICE_ID_JOYPAD_X);
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_START) == RETRO_DEVICE_ID_JOYPAD_START);
+    CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_R2) == RETRO_DEVICE_ID_JOYPAD_R2);
+    CHECK(bf_swap_ab(-1) == -1);
+    CHECK(bf_stick_dpad(0, 0) == 0);
+    CHECK(bf_stick_dpad(10000, -10000) == 0);  // inside half a tilt: nothing
+    CHECK(bf_stick_dpad(32767, 0) == 1u << RETRO_DEVICE_ID_JOYPAD_RIGHT);
+    CHECK(bf_stick_dpad(-32767, 0) == 1u << RETRO_DEVICE_ID_JOYPAD_LEFT);
+    CHECK(bf_stick_dpad(0, -32767) == 1u << RETRO_DEVICE_ID_JOYPAD_UP);
+    CHECK(bf_stick_dpad(0, 32767) == 1u << RETRO_DEVICE_ID_JOYPAD_DOWN);
+    CHECK(bf_stick_dpad(30000, 30000) == ((1u << RETRO_DEVICE_ID_JOYPAD_RIGHT) | (1u << RETRO_DEVICE_ID_JOYPAD_DOWN)));
+}
+
 static void test_state(void)
 {
     // round trip, both forms, sizes that need padding and that span several RZIP chunks
@@ -172,6 +216,8 @@ int main(void)
     test_memmap();
     test_paths();
     test_conf();
+    test_system_setting();
+    test_pad_maps();
     test_state();
     test_resample();
     if (fails) { fprintf(stderr, "%d failed\n", fails); return 1; }

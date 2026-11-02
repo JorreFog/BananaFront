@@ -24,6 +24,13 @@ void bf_conf_set(bf_conf* c, const char* key, const char* val);
 void bf_conf_free(bf_conf* c);
 // a single key from a file (the last line that sets it), into out; false: none
 bool bf_conf_file_get(const char* path, const char* key, char* out, size_t n);
+// a setting of a system's own (settings.conf's <key>.<system>, PR #151: ra_btn_r2.gba, ra_swap_ab.snes): the card's
+// file (data) first, then the image's template (etc), as run-retroarch's setting(); no system: the plain <key>. false: none
+bool bf_system_setting(const char* data, const char* etc, const char* key, const char* system, char* out, size_t n);
+// Swap A/B and X/Y (ra_swap_ab.<system>): the RetroPad id the game gets for the pad's id
+int bf_swap_ab(int id);
+// the left stick as the d-pad (#142, RetroArch's analog_dpad_mode "Left Analog"): the d-pad bits for a stick past half a tilt
+uint32_t bf_stick_dpad(int x, int y);
 
 // ---- paths.c: where saves, states, screenshots go (RetroArch's names, so today's files keep working) ----------
 typedef struct {

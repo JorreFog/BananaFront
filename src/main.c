@@ -567,15 +567,17 @@ static void load_jobs(void)
     hotkeys_on = true;
     char hk[16] = "";
     if (bf_conf_file_get("/data/banana/settings.conf", "ra_hotkeys", hk, sizeof hk) && !strcmp(hk, "off")) hotkeys_on = false;
-    // Settings > Other systems > Buttons (PR #151): L2, R2, L3, R3 alone, as settings.conf (its template: R2 fast-forward)
-    // has them; a card and image without those lines (before #151): every button the game's, as in RetroArch
+    // Settings > Other systems > Buttons > the system (PR #151): L2, R2, L3, R3 alone, as settings.conf has them for this
+    // system (ra_btn_r2.gba ...; the template: R2 fast-forward in the 2D systems' games), else the game's own, as
+    // run-retroarch gives RetroArch. (Before this, the plain ra_btn_r2 only: a new card had no R2 fast-forward here and
+    // a system's page changed nothing)
     static const struct { const char* key; int id; const char* def; } B[] = {
         { "ra_btn_l2", RETRO_DEVICE_ID_JOYPAD_L2, "game" }, { "ra_btn_r2", RETRO_DEVICE_ID_JOYPAD_R2, "game" },
         { "ra_btn_l3", RETRO_DEVICE_ID_JOYPAD_L3, "game" }, { "ra_btn_r3", RETRO_DEVICE_ID_JOYPAD_R3, "game" } };
+    static const char* const DATA = "/data/banana/settings.conf", * const ETC = "/etc/banana/settings.conf";
     for (unsigned i = 0; i < 4; i++) {
         char v[32] = "";
-        if (!bf_conf_file_get("/data/banana/settings.conf", B[i].key, v, sizeof v) &&
-            !bf_conf_file_get("/etc/banana/settings.conf", B[i].key, v, sizeof v))
+        if (!bf_system_setting(DATA, ETC, B[i].key, A.system, v, sizeof v))
             snprintf(v, sizeof v, "%s", B[i].def);
         const char* env = getenv(B[i].key);  // (tests)
         if (env) snprintf(v, sizeof v, "%s", env);
@@ -586,6 +588,12 @@ static void load_jobs(void)
         }
     }
     bf_input_set_job_mask(job_mask);
+    // ...Swap A/B and X/Y (ra_swap_ab.<system>), and the left stick as the d-pad on every system but N64 (#142)
+    char sw[16] = "";
+    const bool swap = bf_system_setting(DATA, ETC, "ra_swap_ab", A.system, sw, sizeof sw) && !strcmp(sw, "on");
+    const bool stick = A.system && *A.system && strcmp(A.system, "n64");
+    bf_input_set_pad(swap, stick);
+    if (swap || stick) bf_log("pad:%s%s", swap ? " A/B and X/Y swapped" : "", stick ? " left stick as d-pad" : "");
 }
 
 // ---- signals -----------------------------------------------------------------------------------------------------

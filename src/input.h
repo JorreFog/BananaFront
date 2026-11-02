@@ -16,6 +16,9 @@ uint32_t bf_input_buttons(void);  // the pad's buttons now (RETRO_DEVICE_ID_JOYP
 bool bf_input_hotkey_held(void);
 // buttons the game doesn't see (their own job instead), RETRO_DEVICE_ID_JOYPAD_* bits
 void bf_input_set_job_mask(uint32_t mask);
+// player 1's pad as Settings > Other systems > Buttons > the system has it (run-retroarch gives RetroArch the same):
+// Swap A/B and X/Y (the game's A on the pad's B ...; the hotkeys stay on the buttons as printed), and the left stick as the d-pad
+void bf_input_set_pad(bool swap_ab, bool stick_dpad);
 // the menu: raw evdev key events (code, value 1 down / 0 up; the hat as BTN_DPAD_*) queued instead of played
 void bf_input_raw(bool on);
 bool bf_input_raw_take(int* code, int* value);
