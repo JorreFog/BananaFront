@@ -564,9 +564,9 @@ static void on_button(int id, bool down, bool f)
 
 static void load_jobs(void)
 {
+    // (the F hotkeys are always on since PR #151 took Settings' RetroArch hotkeys row away: a card's old
+    // ra_hotkeys = off, which nothing can change any more, is ignored, as run-retroarch does)
     hotkeys_on = true;
-    char hk[16] = "";
-    if (bf_conf_file_get("/data/banana/settings.conf", "ra_hotkeys", hk, sizeof hk) && !strcmp(hk, "off")) hotkeys_on = false;
     // Settings > Other systems > Buttons > the system (PR #151): L2, R2, L3, R3 alone, as settings.conf has them for this
     // system (ra_btn_r2.gba ...; the template: R2 fast-forward in the 2D systems' games), else the game's own, as
     // run-retroarch gives RetroArch. (Before this, the plain ra_btn_r2 only: a new card had no R2 fast-forward here and
