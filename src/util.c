@@ -110,9 +110,12 @@ bool bf_conf_file_get(const char* path, const char* key, char* out, size_t n)
 bool bf_system_setting(const char* data, const char* etc, const char* key, const char* system, char* out, size_t n)
 {
     char k[128];
-    if (system && *system) snprintf(k, sizeof k, "%s.%s", key, system);
-    else snprintf(k, sizeof k, "%s", key);
-    return bf_conf_file_get(data, k, out, n) || bf_conf_file_get(etc, k, out, n);
+    if (system && *system) {
+        snprintf(k, sizeof k, "%s.%s", key, system);
+        if (bf_conf_file_get(data, k, out, n) || bf_conf_file_get(etc, k, out, n)) return true;
+    }
+    // (then the plain key: a system with no page of its own, PICO-8, keeps what a card from before #151 said)
+    return bf_conf_file_get(data, key, out, n) || bf_conf_file_get(etc, key, out, n);
 }
 
 int bf_swap_ab(int id)

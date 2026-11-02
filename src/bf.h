@@ -25,7 +25,8 @@ void bf_conf_free(bf_conf* c);
 // a single key from a file (the last line that sets it), into out; false: none
 bool bf_conf_file_get(const char* path, const char* key, char* out, size_t n);
 // a setting of a system's own (settings.conf's <key>.<system>, PR #151: ra_btn_r2.gba, ra_swap_ab.snes): the card's
-// file (data) first, then the image's template (etc), as run-retroarch's setting(); no system: the plain <key>. false: none
+// file (data) first, then the image's template (etc), as run-retroarch's setting(); then the plain <key> (no system,
+// a system without a page: PICO-8, a card from before #151). false: none
 bool bf_system_setting(const char* data, const char* etc, const char* key, const char* system, char* out, size_t n);
 // Swap A/B and X/Y (ra_swap_ab.<system>): the RetroPad id the game gets for the pad's id
 int bf_swap_ab(int id);

@@ -78,7 +78,9 @@ static void test_system_setting(void)
     char v[32];
     CHECK(bf_system_setting(d, e, "ra_btn_l2", "gba", v, sizeof v)); CHECKS(v, "save");   // the card's own
     CHECK(bf_system_setting(d, e, "ra_btn_r2", "gba", v, sizeof v)); CHECKS(v, "ff");     // the template's
-    CHECK(!bf_system_setting(d, e, "ra_btn_r2", "n64", v, sizeof v));                     // none: the game's own
+    CHECK(!bf_system_setting(d, e, "ra_btn_l2", "n64", v, sizeof v));                     // none: the game's own
+    // a system with no page of its own (PICO-8) or an old card's plain line: the plain key, after the system's
+    CHECK(bf_system_setting(d, e, "ra_btn_r2", "pico-8", v, sizeof v)); CHECKS(v, "ff");
     CHECK(!bf_system_setting(d, e, "ra_btn_l3", "gba", v, sizeof v));
     CHECK(bf_system_setting(d, e, "ra_swap_ab", "snes", v, sizeof v)); CHECKS(v, "on");
     CHECK(!bf_system_setting(d, e, "ra_swap_ab", "gba", v, sizeof v));
