@@ -2,9 +2,11 @@
 // - The panel: banana-ui's DRM lease when it lends one (BANANA_DRM_LEASE_FD: that panel's connector, CRTC and primary
 //   plane; banana-ui keeps the other panel for the game panel), else DRM master on card0 and the panel bf_video_opts
 //   names (as RetroArch's video_monitor_index). The mode stays as it is (the CRTC's own, else the panel's preferred).
-// - The core's picture goes into a DRM dumb buffer of the core's size and pixel format (RGB565 / XRGB8888; 0RGB1555
-//   converted to RGB565), and the display plane scales it to the panel (VOP2 does; checked once with a TEST_ONLY
-//   commit). Where the plane can't scale, the CPU scales into a panel-sized buffer (nearest, centred).
+// - No shader: the core's picture (RGB565 / XRGB8888; 0RGB1555 converted to RGB565) is scaled by the CPU, nearest,
+//   into panel-sized DRM dumb buffers: sharp pixels, as RetroArch draws them (video_smooth off). The display plane's
+//   own scaler (VOP2) is bilinear: GBA games looked blurry with it (tester, 0.5.1 dev). BANANAFRONT_PLANE_SCALE=1
+//   gives the plane-scaled picture back (core-sized buffers, the plane scales; checked once with a TEST_ONLY commit).
+// - A shader: core-sized buffers, the shader's input; its output is shown 1:1.
 // - One atomic commit per frame, nonblocking, with a flip event: main runs the next core frame when the flip is done
 //   (one frame per refresh, the lowest latency KMS gives without racing the scanout).
 #define _GNU_SOURCE
@@ -29,6 +31,7 @@ typedef struct {
     uint32_t handle, fb, pitch, w, h, fmt;
     void* map;
     size_t size;
+    int lx, ly, lw, lh;  // !hw: where the picture was last scaled to in it (another place: the old one cleared first)
 } buf_t;
 
 int shader_init(int fd, const char* name);
@@ -349,7 +352,12 @@ enum bf_scale bf_video_get_scale(void) { return K.scale; }
 static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
 {
     const uint32_t f = drm_fmt(core_fmt);
-    if (K.b[0].fb && K.b[0].fmt == f && ((K.hw && K.b[0].w >= w && K.b[0].h >= h) || (!K.hw && K.core_fmt == core_fmt)))
+    static int plane_env = -1;
+    if (plane_env < 0) plane_env = getenv("BANANAFRONT_PLANE_SCALE") && atoi(getenv("BANANAFRONT_PLANE_SCALE"));
+    // (core-sized buffers for the shader's input, or the plane's scaler when asked for; else panel-sized, CPU-scaled)
+    const bool want_hw = K.shader || plane_env;
+    if (K.b[0].fb && K.b[0].fmt == f &&
+        ((K.hw && want_hw && K.b[0].w >= w && K.b[0].h >= h) || (!K.hw && !want_hw && K.core_fmt == core_fmt)))
         return true;
     // the flip pending must finish before its buffer goes
     while (K.pending >= 0) bf_video_events();
@@ -361,16 +369,16 @@ static bool ensure_bufs(unsigned w, unsigned h, int core_fmt)
     unsigned bh = h > g_core.av.geometry.max_height ? h : g_core.av.geometry.max_height;
     if (bw > 2048 || bh > 2048) { bw = w; bh = h; }
     K.gen += 0x1000;
-    K.hw = mkbuf(&K.b[0], bw, bh, f);
+    K.hw = want_hw && mkbuf(&K.b[0], bw, bh, f);
     if (K.hw && K.shader) {
         // (the shader's output is shown 1:1: the game's buffer is only the shader's input)
-    } else if (K.hw && !getenv("BANANAFRONT_CPU_SCALE")) {
+    } else if (K.hw) {
         drmModeAtomicReq* r = drmModeAtomicAlloc();
         add_plane(r, &K.b[0], w, h);
         K.hw = drmModeAtomicCommit(K.fd, r, DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) == 0;
         drmModeAtomicFree(r);
         if (!K.hw) bf_log("kms: the plane doesn't scale %ux%u: the CPU does", w, h);
-    } else K.hw = false;
+    }
     freebuf(&K.b[0]);
     if (!K.hw) { bw = K.mode.hdisplay; bh = K.mode.vdisplay; }
     for (int i = 0; i < NBUF; i++)
@@ -410,6 +418,10 @@ void* bf_video_begin(unsigned w, unsigned h, int fmt, float aspect, int* pitch)
         if ((size_t)w * h * bpp > cap) { cap = (size_t)w * h * bpp; K.cpu_src = realloc(K.cpu_src, cap); }
         K.cpu_pitch = w * bpp;
         *pitch = K.cpu_pitch;
+        // (the scanout buffer it's scaled into at commit: neither on the panel nor waiting to be)
+        int k = 0;
+        while (k == K.shown || k == K.pending) k++;
+        K.drawing = k;
         return K.cpu_src;
     }
     // a buffer that's neither on the panel nor waiting to be
@@ -420,22 +432,90 @@ void* bf_video_begin(unsigned w, unsigned h, int fmt, float aspect, int* pitch)
     return K.b[k].map;
 }
 
+// nearest, as GL_NEAREST samples: dest pixel d takes source pixel floor((d + 0.5) * src / dst). The scanout buffer is
+// write-combined memory (never read back): each source row is expanded once into a cached row, then copied to every
+// panel row that shows it. The picture's place only (the black around it is cleared once per buffer when it moves).
+// (RG DS 640x427 / Plus 1024x683 from the GBA's 240x160: see the commit for the cost per frame)
 static void cpu_scale(buf_t* b)
 {
     int x, y, w, h;
     K.hw = true;  // (dest_rect computes the fitted rectangle)
     dest_rect(K.src_w, K.src_h, &x, &y, &w, &h);
     K.hw = false;
+    if (w <= 0 || h <= 0 || !K.src_w || !K.src_h) return;
     const int bpp = b->fmt == DRM_FORMAT_RGB565 ? 2 : 4;
-    uint8_t* dst = b->map;
-    for (int dy = 0; dy < h; dy++) {
-        const unsigned sy = (unsigned)((uint64_t)dy * K.src_h / h);
-        uint8_t* drow = dst + (size_t)(y + dy) * b->pitch + (size_t)x * bpp;
-        const uint8_t* srow = K.cpu_src + (size_t)sy * K.cpu_pitch;
-        if (bpp == 2)
-            for (int dx = 0; dx < w; dx++) ((uint16_t*)drow)[dx] = ((const uint16_t*)srow)[(uint64_t)dx * K.src_w / w];
-        else
-            for (int dx = 0; dx < w; dx++) ((uint32_t*)drow)[dx] = ((const uint32_t*)srow)[(uint64_t)dx * K.src_w / w];
+    if (b->lx != x || b->ly != y || b->lw != w || b->lh != h) {
+        memset(b->map, 0, b->size);
+        b->lx = x; b->ly = y; b->lw = w; b->lh = h;
+    }
+    static uint32_t* xmap;
+    static uint16_t* runs;  // how many panel pixels each source pixel covers (xmap rises by 0 or 1: runs, in order)
+    static int xmap_w, runs_max;
+    static unsigned xmap_src;
+    static uint8_t* row;
+    static size_t row_cap;
+    if (xmap_w != w || xmap_src != K.src_w) {
+        uint32_t* m = realloc(xmap, sizeof *m * (size_t)w);
+        if (!m) return;
+        xmap = m;
+        for (int dx = 0; dx < w; dx++) xmap[dx] = (uint32_t)(((uint64_t)(2 * dx + 1) * K.src_w) / (2 * (uint64_t)w));
+        uint16_t* r = realloc(runs, sizeof *r * K.src_w);
+        if (!r) return;
+        runs = r;
+        memset(runs, 0, sizeof *r * K.src_w);
+        runs_max = 0;
+        for (int dx = 0; dx < w; dx++) runs[xmap[dx]]++;
+        for (unsigned i = 0; i < K.src_w; i++) if (runs[i] > runs_max) runs_max = runs[i];
+        xmap_w = w;
+        xmap_src = K.src_w;
+    }
+    if ((size_t)w * bpp + 16 > row_cap) {  // (+16: the last run's 8-byte stores may spill past the picture)
+        uint8_t* r = realloc(row, (size_t)w * bpp + 16);
+        if (!r) return;
+        row = r;
+        row_cap = (size_t)w * bpp + 16;
+    }
+    uint8_t* dst = (uint8_t*)b->map + (size_t)y * b->pitch + (size_t)x * bpp;
+    const size_t rowb = (size_t)w * bpp;
+    unsigned have = ~0u;
+    for (int dy = 0; dy < h; dy++, dst += b->pitch) {
+        const unsigned sy = (unsigned)(((uint64_t)(2 * dy + 1) * K.src_h) / (2 * (uint64_t)h));
+        if (sy != have) {
+            const uint8_t* srow = K.cpu_src + (size_t)sy * K.cpu_pitch;
+            if (bpp == 2 && runs_max <= 8) {
+                // each source pixel once, as its run: 4 copies in one 8-byte store (two for a run of 5-8); a store
+                // spilling past its run is overwritten by the next one. (A per-pixel gather was 3/5 of the scale's
+                // 2.7 ms a frame on the Plus at the menu's 408 MHz.)
+                const uint16_t* __restrict s = (const uint16_t*)srow;
+                uint8_t* d = row;
+                for (unsigned sx = 0; sx < K.src_w; sx++) {
+                    const uint64_t v = s[sx] * 0x0001000100010001ull;
+                    memcpy(d, &v, 8);
+                    if (runs[sx] > 4) memcpy(d + 8, &v, 8);
+                    d += 2 * runs[sx];
+                }
+            } else if (bpp == 4 && runs_max <= 4) {
+                // (the same for XRGB8888, BananaNES's and Gambatte's format: 2 copies an 8-byte store)
+                const uint32_t* __restrict s = (const uint32_t*)srow;
+                uint8_t* d = row;
+                for (unsigned sx = 0; sx < K.src_w; sx++) {
+                    const uint64_t v = s[sx] * 0x0000000100000001ull;
+                    memcpy(d, &v, 8);
+                    if (runs[sx] > 2) memcpy(d + 8, &v, 8);
+                    d += 4 * runs[sx];
+                }
+            } else if (bpp == 2) {
+                const uint16_t* s = (const uint16_t*)srow;
+                uint16_t* d = (uint16_t*)row;
+                for (int dx = 0; dx < w; dx++) d[dx] = s[xmap[dx]];
+            } else {
+                const uint32_t* s = (const uint32_t*)srow;
+                uint32_t* d = (uint32_t*)row;
+                for (int dx = 0; dx < w; dx++) d[dx] = s[xmap[dx]];
+            }
+            have = sy;
+        }
+        memcpy(dst, row, rowb);
     }
 }
 
@@ -547,7 +627,7 @@ uint32_t* bf_video_grab(int* w, int* h)
 {
     const buf_t* b = NULL;
     if (K.shader && K.out_shown >= 0) b = &K.out[K.out_shown];
-    else if (K.hw && K.shown >= 0) b = &K.b[K.shown];
+    else if (K.shown >= 0) b = &K.b[K.shown];  // (core-sized when the plane scales it, else panel-sized: as shown)
     if (!b || !b->map || !b->w || !b->h) return NULL;
     uint32_t* px = malloc((size_t)b->w * b->h * 4);
     if (!px) return NULL;
