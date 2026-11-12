@@ -34,3 +34,4 @@ void bf_quit(bool nosave);
 bool bf_quitting(void);
 bool bf_resume_on(void);
 const char* bf_rom(void);
+const char* bf_system(void);  // --system (NULL: none)

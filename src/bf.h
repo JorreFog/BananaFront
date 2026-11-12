@@ -28,6 +28,13 @@ bool bf_conf_file_get(const char* path, const char* key, char* out, size_t n);
 // file (data) first, then the image's template (etc), as run-retroarch's setting(); then the plain <key> (no system,
 // a system without a page: PICO-8, a card from before #151). false: none
 bool bf_system_setting(const char* data, const char* etc, const char* key, const char* system, char* out, size_t n);
+// Quick settings > Picture size, kept per system (#219): <data>/picture.conf, "scale.<system> = fit|integer|stretch"
+// ("scale" with no system). 0 fit, 1 integer, 2 stretch (video.h's enum bf_scale); load: -1 none saved (or not one
+// of those), the launcher's --scale stands. store: false on an error or a value out of range, the old file kept.
+int bf_scale_load(const char* data, const char* system);
+bool bf_scale_store(const char* data, const char* system, int scale);
+// BananaFront's own folder ($BANANAFRONT_DATA, else /data/bananafront)
+const char* bf_data_dir(void);
 // Swap A/B and X/Y (ra_swap_ab.<system>): the RetroPad id the game gets for the pad's id
 int bf_swap_ab(int id);
 // the left stick as the d-pad (#142, RetroArch's analog_dpad_mode "Left Analog"): the d-pad bits for a stick past half a tilt

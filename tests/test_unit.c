@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "../src/bf.h"
 #include "../src/memmap.h"
@@ -91,6 +92,40 @@ static void test_system_setting(void)
 }
 
 // Swap A/B and X/Y, and the left stick as the d-pad (#142), as run-retroarch gives RetroArch
+// #219: Quick settings > Picture size kept per system, read back at the next start (any game of that system)
+static void test_picture_size(void)
+{
+    char d[] = "/tmp/bf-test-pic.XXXXXX";
+    CHECK(mkdtemp(d) != NULL);
+    char sub[64];
+    snprintf(sub, sizeof sub, "%s/new", d);                       // (a data folder not made yet)
+    CHECK(bf_scale_load(sub, "gba") == -1);                       // nothing saved: the launcher's stands
+    CHECK(bf_scale_store(sub, "gba", 1));                         // Whole numbers on a GBA game
+    CHECK(bf_scale_load(sub, "gba") == 1);                        // the next start, this game or another GBA one
+    CHECK(bf_scale_load(sub, "snes") == -1);                      // another system keeps its own
+    CHECK(bf_scale_store(sub, "snes", 2));
+    CHECK(bf_scale_load(sub, "gba") == 1);                        // (one system's save keeps the other's)
+    CHECK(bf_scale_load(sub, "snes") == 2);
+    CHECK(bf_scale_store(sub, "gba", 0));                         // back to Keep the shape: kept too
+    CHECK(bf_scale_load(sub, "gba") == 0);
+    CHECK(bf_scale_store(sub, "", 1));                            // no --system: a key of its own
+    CHECK(bf_scale_load(sub, NULL) == 1);
+    CHECK(bf_scale_load(sub, "gba") == 0);
+    CHECK(!bf_scale_store(sub, "gba", 3));                        // not a picture size
+    char p[96], v[32] = "";
+    snprintf(p, sizeof p, "%s/picture.conf", sub);
+    CHECK(bf_conf_file_get(p, "scale.gba", v, sizeof v)); CHECKS(v, "fit");
+    CHECK(bf_conf_file_get(p, "scale.snes", v, sizeof v)); CHECKS(v, "stretch");
+    FILE* o = fopen(p, "w");                                      // a hand-edited file with a bad value: ignored
+    fprintf(o, "scale.gba = huge\nscale.nes = integer\n");
+    fclose(o);
+    CHECK(bf_scale_load(sub, "gba") == -1);
+    CHECK(bf_scale_load(sub, "nes") == 1);
+    unlink(p);
+    rmdir(sub);
+    rmdir(d);
+}
+
 static void test_pad_maps(void)
 {
     CHECK(bf_swap_ab(RETRO_DEVICE_ID_JOYPAD_A) == RETRO_DEVICE_ID_JOYPAD_B);
@@ -219,6 +254,7 @@ int main(void)
     test_paths();
     test_conf();
     test_system_setting();
+    test_picture_size();
     test_pad_maps();
     test_state();
     test_resample();

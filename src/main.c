@@ -518,6 +518,7 @@ void bf_quit(bool nosave) { quit = true; quit_nosave = nosave; }
 bool bf_quitting(void) { return quit || sig_quit; }
 bool bf_resume_on(void) { return A.resume_save; }
 const char* bf_rom(void) { return A.rom; }
+const char* bf_system(void) { return A.system; }
 const char* bf_audio_device(void) { return A.audio_dev; }
 
 // ---- hotkeys -----------------------------------------------------------------------------------------------------
@@ -687,6 +688,15 @@ int main(int argc, char** argv)
     sram_load();
 
     const char* top = getenv("BANANA_TOP");
+    // the picture size Quick settings last gave this system (#219: kept per system, any game of it), over the
+    // launcher's --scale (RetroArch's video_scale_integer); none saved: the launcher's
+    {
+        static const char* const N[] = { "fit", "integer", "stretch" };
+        const int s = bf_scale_load(bf_data_dir(), A.system);
+        if (s >= 0) A.scale = (enum bf_scale)s;
+        bf_log("picture size: %s (%s%s)", N[A.scale], s >= 0 ? "Quick settings, " : "the launcher's",
+               s >= 0 ? (A.system && *A.system ? A.system : "no system") : "");
+    }
     bf_video_opts vo = { .screen = A.screen, .top_conn = top ? top : "DSI-2", .scale = A.scale };
     if (!bf_video_open(&vo)) { sram_save(true); bf_core_close(); return 1; }
     if (A.shader && *A.shader) bf_video_shader(A.shader);

@@ -169,7 +169,9 @@ static void sound_play(void* ctx, int id)
     if (id >= 0 && id < 8 && snd[id].pcm) bf_audio_raw(snd[id].pcm, snd[id].frames);
 }
 
-// Quick settings: the picture's look and size, for this game (Settings > Other systems keeps the defaults)
+// Quick settings: the picture's look and size. The size is kept for the system (#219: every game of it, the next
+// start too: picture.conf in BananaFront's folder); the shader is for this session (Settings > Other systems > Shader
+// keeps the default)
 static const char* SH_NAME[] = { "", "zfast-lcd", "zfast-crt", "sharp-bilinear" };
 static const char* SH_LABEL[] = { "Off", "Fast LCD", "Fast CRT", "Sharp pixels" };
 static const char* SC_LABEL[] = { "Keep the shape", "Whole numbers", "Fill the screen" };
@@ -188,7 +190,12 @@ static int opt_get(void* ctx, int i)
 static void opt_set(void* ctx, int i, int v)
 {
     (void)ctx;
-    if (i == 1) { bf_video_set_scale((enum bf_scale)(v % 3)); return; }
+    if (i == 1) {
+        bf_video_set_scale((enum bf_scale)(v % 3));
+        const char* sys = bf_system();
+        if (!bf_scale_store(bf_data_dir(), sys, v % 3)) bf_log("menu: couldn't keep the picture size in %s", bf_data_dir());
+        return;
+    }
     if (v <= 0) bf_video_shader_off();
     else bf_video_shader(SH_NAME[v & 3]);
 }

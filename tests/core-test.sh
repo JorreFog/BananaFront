@@ -25,4 +25,15 @@ TESTCORE_FRAME_MS=9 TESTCORE_SPIKE_EVERY=60 ASAN_OPTIONS=detect_leaks=0 BANANAFR
     build/host/testcore.so "$T/game.tst" < /dev/null > /dev/null 2> "$T/err3"
 c=$(grep -o "END .*caught-up [0-9]*" "$T/err3" | grep -o "caught-up [0-9]*" | grep -o "[0-9]*$")
 [ "${c:-0}" -ge 4 ] && echo "ok   a heavy core's owed frames caught up ($c)" || { echo "FAIL catch-up: $(grep END "$T/err3")"; f=1; }
+# #219: Quick settings > Picture size is kept per system ($BANANAFRONT_DATA/picture.conf, scale.<system>) and the
+# next start of any game of that system uses it, over the launcher's --scale; another system keeps the launcher's
+mkdir -p "$T/d"; printf 'scale.gba = integer\nscale.snes = stretch\n' > "$T/d/picture.conf"
+BANANAFRONT_DATA="$T/d" ASAN_OPTIONS=detect_leaks=0 BANANAFRONT_INPUT=/dev/null BANANAFRONT_NULL_HZ=0 ./build/host/bananafront \
+    --system gba --saves "$T/s" --states "$T/st" --shots "$T/sh" --config "$T/c" --frames 5 \
+    build/host/testcore.so "$T/game.tst" < /dev/null > /dev/null 2> "$T/err4"
+grep -q "picture size: integer (Quick settings, gba)" "$T/err4" && echo "ok   the saved picture size used at the next start" || { echo "FAIL saved picture size: $(grep -i 'picture size' "$T/err4")"; f=1; }
+BANANAFRONT_DATA="$T/d" ASAN_OPTIONS=detect_leaks=0 BANANAFRONT_INPUT=/dev/null BANANAFRONT_NULL_HZ=0 ./build/host/bananafront \
+    --system gb --scale integer --saves "$T/s" --states "$T/st" --shots "$T/sh" --config "$T/c" --frames 5 \
+    build/host/testcore.so "$T/game.tst" < /dev/null > /dev/null 2> "$T/err5"
+grep -q "picture size: integer (the launcher's)" "$T/err5" && echo "ok   a system with none saved keeps the launcher's" || { echo "FAIL launcher's picture size: $(grep -i 'picture size' "$T/err5")"; f=1; }
 exit $f

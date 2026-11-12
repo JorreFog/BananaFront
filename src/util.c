@@ -118,6 +118,54 @@ bool bf_system_setting(const char* data, const char* etc, const char* key, const
     return bf_conf_file_get(data, key, out, n) || bf_conf_file_get(etc, key, out, n);
 }
 
+static const char* const SCALE_NAME[] = { "fit", "integer", "stretch" };
+
+static void scale_paths(const char* data, const char* system, char* file, size_t fn, char* key, size_t kn)
+{
+    snprintf(file, fn, "%s/picture.conf", data);
+    if (system && *system) snprintf(key, kn, "scale.%s", system);
+    else snprintf(key, kn, "scale");
+}
+
+int bf_scale_load(const char* data, const char* system)
+{
+    char f[1100], k[128], v[32];
+    scale_paths(data, system, f, sizeof f, k, sizeof k);
+    if (!bf_conf_file_get(f, k, v, sizeof v)) return -1;
+    for (int i = 0; i < 3; i++) if (!strcmp(v, SCALE_NAME[i])) return i;
+    return -1;
+}
+
+bool bf_scale_store(const char* data, const char* system, int scale)
+{
+    if (scale < 0 || scale > 2) return false;
+    char f[1100], k[128];
+    scale_paths(data, system, f, sizeof f, k, sizeof k);
+    if (!bf_mkdirs(data)) return false;
+    // (every other system's line kept: the file read, this key set, the whole written back atomically)
+    bf_conf c = { 0 };
+    bf_conf_load(&c, f);
+    bf_conf_set(&c, k, SCALE_NAME[scale]);
+    size_t cap = 128, len = 0;  // (the comment line, then each line: key, " = ", value, newline)
+    for (int i = 0; i < c.n; i++) cap += strlen(c.v[i].key) + strlen(c.v[i].val) + 8;
+    char* out = malloc(cap);
+    bool ok = out != NULL;
+    if (ok) {
+        len += (size_t)snprintf(out + len, cap - len, "# BananaFront: Quick settings > Picture size, per system (scale.<system>)\n");
+        for (int i = 0; i < c.n; i++) len += (size_t)snprintf(out + len, cap - len, "%s = %s\n", c.v[i].key, c.v[i].val);
+        ok = bf_write_file(f, out, len);
+    }
+    free(out);
+    bf_conf_free(&c);
+    return ok;
+}
+
+const char* bf_data_dir(void)
+{
+    const char* d = getenv("BANANAFRONT_DATA");
+    return d && *d ? d : "/data/bananafront";
+}
+
 int bf_swap_ab(int id)
 {
     switch (id) {
